@@ -68,6 +68,7 @@ func (s *Server) orchestrationTools() []actool.CoreTool {
 		s.toolListLLMProfiles(),
 		s.toolSpawnTask(),
 		s.toolPauseTask(),
+		s.toolResumeTask(),
 		s.toolGetTaskGraph(),
 		s.toolListTaskFindings(),
 		s.toolAddHint(),
@@ -347,6 +348,26 @@ func (s *Server) toolPauseTask() actool.CoreTool {
 		})
 }
 
+func (s *Server) toolResumeTask() actool.CoreTool {
+	return wrTool("resume_task", "恢复指定的已暂停任务。若并发上限已满，任务会进入队列并在有空位时自动运行。",
+		objSchema(map[string]any{"task_id": strParam("要恢复的任务 id")}, "task_id"),
+		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+			var a struct {
+				TaskID string `json:"task_id"`
+			}
+			_ = json.Unmarshal(in, &a)
+			t, ok := s.m.Task(strings.TrimSpace(a.TaskID))
+			if !ok {
+				return actool.Errorf("task 不存在: " + a.TaskID), nil
+			}
+			result, err := s.applyTaskControlWithCause(t, "resume", agent.AbortPausedByOrchestrator)
+			if err != nil {
+				return actool.Errorf(err.Error()), nil
+			}
+			return jsonResult(result)
+		})
+}
+
 func (s *Server) toolGetTaskGraph() actool.CoreTool {
 	return roTool("get_task_graph", "读指定任务的探索图总览(同 graph_overview：资产计数/frontier/发现/覆盖等)，用 task_id 指定任务。",
 		objSchema(map[string]any{"task_id": strParam("任务 id")}, "task_id"),
@@ -514,7 +535,7 @@ func (s *Server) seedOrchestrationTools() {
 // reaches an old DB otherwise. Preserves each tool's agent binding + enabled flag.
 // Bump the flag whenever these tools' schemas/descriptions change in code.
 func (s *Server) refreshBuiltinToolSchemas() {
-	const flag = "tool_schema_refresh_v7_list_facts_paging"
+	const flag = "tool_schema_refresh_v8_remote_resume_task"
 	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
 		return
 	}

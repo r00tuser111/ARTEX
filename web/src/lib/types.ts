@@ -942,6 +942,38 @@ export interface Settings {
   noa_compaction?: boolean;
 }
 
+// ---- Remote control channels ----
+export interface RemoteChannel {
+  id: number;
+  endpoint_key: string;
+  kind: "wechat_claw" | "feishu";
+  name: string;
+  enabled: boolean;
+  webhook_url: string;
+  connected: boolean;
+  ilink_bot_id?: string;
+  ilink_user_id?: string;
+  route_tag?: string;
+  app_id?: string;
+  app_secret_set?: boolean;
+  verification_token_set?: boolean;
+  encrypt_key_set?: boolean;
+  base_url?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RemoteBinding {
+  id: number;
+  channel_id: number;
+  external_user_id: string;
+  external_chat_id: string;
+  display_name: string;
+  conversation_id: number;
+  created_at: string;
+  updated_at: string;
+}
+
 // ---- LLM config ----
 export interface LLMProfile {
   id: string;

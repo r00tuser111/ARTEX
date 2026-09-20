@@ -73,6 +73,11 @@ type Server struct {
 	// trigger queue — the drain goroutine simply proceeds to the next queued fire.
 	chatCancel map[string]context.CancelCauseFunc
 
+	// remoteCancel owns one long-poll worker for every connected WeChat Claw
+	// channel. Saving, disabling, or deleting a channel replaces/stops its worker.
+	remoteMu     sync.Mutex
+	remoteCancel map[int64]context.CancelFunc
+
 	// triggerQ buffers P3 trigger fires PER AGENT. A per-agent "pump" launches runs up
 	// to a concurrency limit derived from the agent's策略: serial → limit 1 (+ optional
 	// merge); parallel → limit = trigger_max_parallel (0=∞), no merge. triggerActive
@@ -145,10 +150,10 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		log.Fatalf("[auth] JWT key: %v", err)
 	}
 	s := &Server{m: m, engine: NewEngine(m), ctx: ctx, skillDir: skillDir, jwtKey: key, chatBusy: map[string]bool{},
-		chatCancel: map[string]context.CancelCauseFunc{}, triggerQ: map[string][]triggeredRun{},
+		chatCancel: map[string]context.CancelCauseFunc{}, remoteCancel: map[int64]context.CancelFunc{}, triggerQ: map[string][]triggeredRun{},
 		triggerActive: map[string]int{}, triggerCfg: map[string]triggerBehavior{},
 		profChatAgents: map[int64]*agent.ChatAgent{},
-		provByProfile: map[int64]*provEntry{}, llmHealth: newLLMHealthRegistry(m.pg),
+		provByProfile:  map[int64]*provEntry{}, llmHealth: newLLMHealthRegistry(m.pg),
 		taskAgents: map[string]*taskAgentBundle{}, archiveWake: make(chan struct{}, 1)}
 	s.initSideQuestions()
 	// 熔断阈值/冷却是失败路径上的热参数，启动时把全局重试策略推给 Registry 一次；
@@ -252,6 +257,7 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 	go s.reconcileConcurrency()
 	s.startTaskArchiveWorker()
 	s.wireInterceptReviewer() // LLM 兜底审批:未命中拦截规则的命令交给模型判定
+	s.startWeChatChannels()
 	return s
 }
 
@@ -653,6 +659,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/auth/login", s.authLogin)
 	mux.HandleFunc("POST /api/auth/change-password", s.authChangePassword)
 
+	// Feishu event callbacks authenticate at the channel adapter layer. WeChat
+	// Claw is outbound long-polling and therefore has no public webhook endpoint.
+	mux.HandleFunc("POST /api/remote/hooks/feishu/{endpoint}", s.feishuHook)
+
 	mux.HandleFunc("GET /api/health", s.health)
 	mux.HandleFunc("GET /api/stats", s.stats)
 	mux.HandleFunc("GET /api/logs", s.getLogs)
@@ -789,6 +799,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/settings", s.getSettings)
 	mux.HandleFunc("PUT /api/settings", s.putSettings)
 	mux.HandleFunc("POST /api/settings/web-search/test", s.testWebSearch)
+	// Remote-control administration (JWT protected).
+	mux.HandleFunc("GET /api/remote/channels", s.listRemoteChannels)
+	mux.HandleFunc("POST /api/remote/channels", s.saveRemoteChannel)
+	mux.HandleFunc("DELETE /api/remote/channels/{id}", s.deleteRemoteChannel)
+	mux.HandleFunc("POST /api/remote/channels/{id}/wechat/login/start", s.startWeChatLogin)
+	mux.HandleFunc("POST /api/remote/channels/{id}/wechat/login/poll", s.pollWeChatLogin)
+	mux.HandleFunc("POST /api/remote/channels/{id}/pairing-code", s.createRemotePairingCode)
+	mux.HandleFunc("GET /api/remote/bindings", s.listRemoteBindings)
+	mux.HandleFunc("DELETE /api/remote/bindings/{id}", s.deleteRemoteBinding)
 	mux.HandleFunc("GET /api/report", s.getReport)
 	mux.HandleFunc("GET /api/chat/mentions", s.searchChatMentions)
 	mux.HandleFunc("POST /api/chat", s.chat)

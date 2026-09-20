@@ -981,6 +981,73 @@ CREATE INDEX IF NOT EXISTS idx_conv_act_tool_call ON conversation_activities(con
   WHERE kind IN ('tool_use', 'tool_result');
 
 -- =====================================================================
+-- I.1 远程控制渠道 / 身份绑定
+-- =====================================================================
+-- 微信 Claw 的 iLink 登录态以及飞书 App Secret 保存在 config JSON 中（与 LLM key
+-- 的当前存储模型一致），管理接口只回传连接状态或 *_set presence flag，不回传密钥。
+CREATE TABLE IF NOT EXISTS remote_channels (
+    id           BIGSERIAL PRIMARY KEY,
+    endpoint_key TEXT NOT NULL UNIQUE,
+    kind         TEXT NOT NULL CHECK (kind IN ('wechat_claw','feishu')),
+    name         TEXT NOT NULL,
+    enabled      BOOLEAN NOT NULL DEFAULT true,
+    config       JSONB NOT NULL DEFAULT '{}',
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+DROP TRIGGER IF EXISTS trg_remote_channels_upd ON remote_channels;
+CREATE TRIGGER trg_remote_channels_upd BEFORE UPDATE ON remote_channels
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE TABLE IF NOT EXISTS remote_bindings (
+    id               BIGSERIAL PRIMARY KEY,
+    channel_id       BIGINT NOT NULL REFERENCES remote_channels(id) ON DELETE CASCADE,
+    external_user_id TEXT NOT NULL,
+    external_chat_id TEXT NOT NULL DEFAULT '',
+    display_name     TEXT NOT NULL DEFAULT '',
+    conversation_id  BIGINT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (channel_id, external_user_id, external_chat_id)
+);
+CREATE INDEX IF NOT EXISTS idx_remote_bindings_channel ON remote_bindings(channel_id, id);
+DROP TRIGGER IF EXISTS trg_remote_bindings_upd ON remote_bindings;
+CREATE TRIGGER trg_remote_bindings_upd BEFORE UPDATE ON remote_bindings
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE TABLE IF NOT EXISTS remote_pairing_codes (
+    id         BIGSERIAL PRIMARY KEY,
+    channel_id BIGINT NOT NULL REFERENCES remote_channels(id) ON DELETE CASCADE,
+    code_hash  TEXT NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    used_at    TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_remote_pairing_active ON remote_pairing_codes(channel_id, expires_at)
+    WHERE used_at IS NULL;
+
+-- 每条外部消息是一条异步执行/审计记录；(channel,event) 唯一约束承担渠道重试去重。
+CREATE TABLE IF NOT EXISTS remote_messages (
+    id                  TEXT PRIMARY KEY,
+    channel_id          BIGINT NOT NULL REFERENCES remote_channels(id) ON DELETE CASCADE,
+    external_message_id TEXT NOT NULL,
+    external_user_id    TEXT NOT NULL,
+    external_chat_id    TEXT NOT NULL DEFAULT '',
+    conversation_id     BIGINT REFERENCES conversations(id) ON DELETE SET NULL,
+    status              TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued','running','completed','failed')),
+    request_text        TEXT NOT NULL DEFAULT '',
+    reply_text          TEXT NOT NULL DEFAULT '',
+    error_text          TEXT NOT NULL DEFAULT '',
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (channel_id, external_message_id)
+);
+CREATE INDEX IF NOT EXISTS idx_remote_messages_channel ON remote_messages(channel_id, created_at DESC);
+DROP TRIGGER IF EXISTS trg_remote_messages_upd ON remote_messages;
+CREATE TRIGGER trg_remote_messages_upd BEFORE UPDATE ON remote_messages
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- =====================================================================
 -- J. Agent 触发器
 -- =====================================================================
 CREATE TABLE IF NOT EXISTS agent_triggers (

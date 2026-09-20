@@ -245,6 +245,36 @@ CGO_ENABLED=0 go build -tags embedui -o artex ./cmd/artex
 
 **常用参数**：`./start.sh -addr :8787 -proxy :8788`（`-addr` 前端+API，`-proxy` 流量录制代理）。启动脚本会把参数原样透传给 `artex`。
 
+### 微信 Claw / 飞书远程控制
+
+登录 ARTEX 后进入「系统 → 远程控制」。微信 Claw 使用官方 iLink 登录态，飞书使用事件回调验签；两个渠道上的外部账号都必须再用一次性配对码绑定，未配对账号不能读取或控制任何任务。每个远程账号绑定一条独立的 Auto Agent 会话，操作过程与网页对话一样持久化、可审计。
+
+支持的快捷命令：
+
+- `/tasks`：列出全部任务及当前状态；
+- `/task <ID>`：查看任务目标、子目标、发现和图谱概况；
+- `/pause <ID>`、`/resume <ID>`：暂停或恢复任务；
+- `/new <描述> | <目标>`：新建并启动任务；
+- `/help`：显示帮助。其他自然语言消息交给 Auto Agent，由它调用跨任务编排工具完成查询、建任务、暂停/恢复和注入提示等操作。
+
+#### 微信 Claw
+
+1. 在 ARTEX 新建「微信 Claw」渠道并保存。通常保留默认 iLink API 地址；私有部署按需填写 `SKRouteTag`。
+2. 点击「微信扫码登录」，用微信扫描二维码并在手机端确认。ARTEX 会保存登录态，启动 `getupdates` 长轮询，并通过 `sendmessage` 直接回复。
+3. 在 ARTEX 点击「生成配对码」，然后在微信对话中发送 `/bind 123456`。配对码 10 分钟有效且仅能使用一次。
+4. 绑定成功后，可发送快捷命令或直接用自然语言管理 ARTEX。停用或删除渠道会停止对应的微信长轮询。
+
+实现依据腾讯官方 [openclaw-weixin](https://github.com/Tencent/openclaw-weixin) 的 [Weixin Backend API Protocol](https://github.com/Tencent/openclaw-weixin/blob/main/docs/protocol.md)。这里是 ARTEX 对官方 iLink HTTP/JSON 协议的直接实现，不依赖额外中间进程或通用 webhook。
+
+#### 飞书应用机器人
+
+1. 在飞书开放平台创建企业自建应用，启用机器人，开通接收/发送消息权限，并订阅 `im.message.receive_v1`。
+2. 在 ARTEX 新建「飞书」渠道，填写 App ID、App Secret、Verification Token；如飞书启用了 Encrypt Key，也一并填写（ARTEX 会验签并解密事件）。海外 Lark 可把开放平台地址改为 `https://open.larksuite.com`。
+3. 保存后复制 Webhook URL 到飞书事件订阅的「请求地址」。ARTEX 会响应 URL verification challenge。
+4. 在 ARTEX 生成配对码，并在飞书私聊或群聊机器人时发送 `/bind 123456`。
+
+飞书回调会立即确认，任务在后台执行，完成后机器人通过消息回复 API 返回结果。事件 ID 会持久化去重，飞书重试不会重复执行同一条指令。部署时必须让 Webhook 使用公网可达的 HTTPS 地址；建议再在反向代理上限制请求体大小并保留真实 `X-Forwarded-Proto/Host`。
+
 ---
 
 

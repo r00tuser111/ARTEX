@@ -64,6 +64,8 @@ import type {
   ModelTokenStat,
   PromptVar,
   PromptVersion,
+  RemoteBinding,
+  RemoteChannel,
   SessionTokenUsage,
   Settings,
   Severity,
@@ -754,6 +756,37 @@ export const api = {
   // ---- app settings (runtime toggles) ----
   settings: () => get<Settings>(`/settings`),
   setSettings: (patch: Partial<Settings>) => put<Settings>(`/settings`, patch),
+  // ---- remote control ----
+  remoteChannels: () => get<{ channels: RemoteChannel[] }>(`/remote/channels`).then((r) => arr(r.channels)),
+  saveRemoteChannel: (channel: {
+    id?: number;
+    kind: "wechat_claw" | "feishu";
+    name: string;
+    enabled?: boolean;
+    app_id?: string;
+    app_secret?: string;
+    verification_token?: string;
+    encrypt_key?: string;
+    base_url?: string;
+    route_tag?: string;
+  }) => post<{ channel: RemoteChannel }>(`/remote/channels`, channel),
+  deleteRemoteChannel: (id: number) => del<{ deleted: number }>(`/remote/channels/${id}`),
+  startWeChatLogin: (id: number) =>
+    post<{ status: string; qrcode: string; qrcode_img_content: string; channel: RemoteChannel }>(
+      `/remote/channels/${id}/wechat/login/start`,
+      {},
+    ),
+  pollWeChatLogin: (id: number, verifyCode = "") =>
+    post<{ status: string; channel: RemoteChannel }>(`/remote/channels/${id}/wechat/login/poll`, {
+      verify_code: verifyCode,
+    }),
+  createRemotePairingCode: (id: number) =>
+    post<{ code: string; command: string; expires_at: string }>(`/remote/channels/${id}/pairing-code`, {}),
+  remoteBindings: (channelId?: number) =>
+    get<{ bindings: RemoteBinding[] }>(
+      `/remote/bindings${channelId ? `?channel_id=${encodeURIComponent(channelId)}` : ""}`,
+    ).then((r) => arr(r.bindings)),
+  deleteRemoteBinding: (id: number) => del<{ deleted: number }>(`/remote/bindings/${id}`),
   // Run a real "test" search with the given (or saved) config to verify it works.
   testWebSearch: (patch: {
     web_search_backend?: string;
