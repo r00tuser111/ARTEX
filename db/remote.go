@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"time"
 )
 
@@ -44,6 +45,22 @@ type RemoteMessage struct {
 	CreatedAt         time.Time `json:"created_at"`
 	UpdatedAt         time.Time `json:"updated_at"`
 }
+
+// RemotePairingRequest is created automatically when an unknown remote user
+// sends a direct message. The short-lived code is shown both to that user and
+// to an authenticated ARTEX administrator for an explicit approval decision.
+type RemotePairingRequest struct {
+	ID             int64     `json:"id"`
+	ChannelID      int64     `json:"channel_id"`
+	Code           string    `json:"code"`
+	ExternalUserID string    `json:"external_user_id"`
+	ExternalChatID string    `json:"external_chat_id"`
+	DisplayName    string    `json:"display_name"`
+	ExpiresAt      time.Time `json:"expires_at"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
+var ErrRemotePairingLimit = errors.New("too many pending remote pairing requests")
 
 const remoteChannelCols = `id,endpoint_key,kind,name,enabled,config,created_at,updated_at`
 
@@ -113,33 +130,102 @@ func (d *DB) DeleteRemoteChannel(id int64) error {
 	return err
 }
 
-func (d *DB) CreateRemotePairingCode(channelID int64, codeHash string, expires time.Time) error {
-	_, err := d.Exec(`WITH invalidated AS (
-  UPDATE remote_pairing_codes SET used_at=now()
-  WHERE channel_id=$1 AND used_at IS NULL
-)
-INSERT INTO remote_pairing_codes(channel_id,code_hash,expires_at) VALUES ($1,$2,$3)`, channelID, codeHash, expires)
-	return err
+const remotePairingRequestCols = `id,channel_id,code,external_user_id,external_chat_id,display_name,expires_at,created_at`
+
+func scanRemotePairingRequest(row interface{ Scan(...any) error }) (*RemotePairingRequest, error) {
+	var request RemotePairingRequest
+	err := row.Scan(&request.ID, &request.ChannelID, &request.Code, &request.ExternalUserID,
+		&request.ExternalChatID, &request.DisplayName, &request.ExpiresAt, &request.CreatedAt)
+	return &request, err
 }
 
-// ConsumeRemotePairingCode atomically marks one live code used.
-func (d *DB) ConsumeRemotePairingCode(channelID int64, codeHash string) (bool, error) {
-	var id int64
-	err := d.QueryRow(`UPDATE remote_pairing_codes SET used_at=now() WHERE id=(
-  SELECT id FROM remote_pairing_codes
-  WHERE channel_id=$1 AND code_hash=$2 AND used_at IS NULL AND expires_at>now()
-  ORDER BY id DESC LIMIT 1 FOR UPDATE SKIP LOCKED
-) RETURNING id`, channelID, codeHash).Scan(&id)
-	if err == sql.ErrNoRows {
-		return false, nil
+// GetOrCreateRemotePairingRequest implements the DM-pairing behavior used by
+// chat channels: one active request per sender/chat, at most three pending
+// requests per channel, and no new code on every repeated message.
+func (d *DB) GetOrCreateRemotePairingRequest(channelID int64, userID, chatID, displayName, code, codeHash string, expires time.Time) (*RemotePairingRequest, bool, error) {
+	_, err := d.Exec(`UPDATE remote_pairing_codes SET used_at=now()
+WHERE channel_id=$1 AND used_at IS NULL AND expires_at<=now()`, channelID)
+	if err != nil {
+		return nil, false, err
 	}
-	return err == nil, err
+	existing, err := scanRemotePairingRequest(d.QueryRow(`SELECT `+remotePairingRequestCols+`
+FROM remote_pairing_codes
+WHERE channel_id=$1 AND external_user_id=$2 AND external_chat_id=$3
+  AND used_at IS NULL AND expires_at>now()
+ORDER BY id DESC LIMIT 1`, channelID, userID, chatID))
+	if err == nil {
+		return existing, false, nil
+	}
+	if err != sql.ErrNoRows {
+		return nil, false, err
+	}
+	var pending int
+	if err := d.QueryRow(`SELECT count(*) FROM remote_pairing_codes
+WHERE channel_id=$1 AND external_user_id<>'' AND used_at IS NULL AND expires_at>now()`, channelID).Scan(&pending); err != nil {
+		return nil, false, err
+	}
+	if pending >= 3 {
+		return nil, false, ErrRemotePairingLimit
+	}
+	request, err := scanRemotePairingRequest(d.QueryRow(`INSERT INTO remote_pairing_codes
+(channel_id,code_hash,code,external_user_id,external_chat_id,display_name,expires_at)
+VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING `+remotePairingRequestCols,
+		channelID, codeHash, code, userID, chatID, displayName, expires))
+	if err == nil {
+		return request, true, nil
+	}
+	// A concurrent message may have inserted the same sender request first.
+	existing, lookupErr := scanRemotePairingRequest(d.QueryRow(`SELECT `+remotePairingRequestCols+`
+FROM remote_pairing_codes
+WHERE channel_id=$1 AND external_user_id=$2 AND external_chat_id=$3
+  AND used_at IS NULL AND expires_at>now()
+ORDER BY id DESC LIMIT 1`, channelID, userID, chatID))
+	if lookupErr == nil {
+		return existing, false, nil
+	}
+	return nil, false, err
+}
+
+func (d *DB) ListRemotePairingRequests(channelID int64) ([]*RemotePairingRequest, error) {
+	rows, err := d.Query(`SELECT `+remotePairingRequestCols+` FROM remote_pairing_codes
+WHERE ($1=0 OR channel_id=$1) AND external_user_id<>'' AND used_at IS NULL AND expires_at>now()
+ORDER BY created_at`, channelID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []*RemotePairingRequest{}
+	for rows.Next() {
+		request, err := scanRemotePairingRequest(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, request)
+	}
+	return out, rows.Err()
+}
+
+func (d *DB) GetRemotePairingRequest(id int64) (*RemotePairingRequest, error) {
+	request, err := scanRemotePairingRequest(d.QueryRow(`SELECT `+remotePairingRequestCols+`
+FROM remote_pairing_codes WHERE id=$1 AND external_user_id<>'' AND used_at IS NULL AND expires_at>now()`, id))
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return request, err
+}
+
+func (d *DB) ResolveRemotePairingRequest(id int64) error {
+	_, err := d.Exec(`UPDATE remote_pairing_codes SET used_at=now() WHERE id=$1 AND used_at IS NULL`, id)
+	return err
 }
 
 func (d *DB) GetRemoteBinding(channelID int64, userID, chatID string) (*RemoteBinding, error) {
 	var b RemoteBinding
 	err := d.QueryRow(`SELECT id,channel_id,external_user_id,external_chat_id,display_name,conversation_id,created_at,updated_at
-FROM remote_bindings WHERE channel_id=$1 AND external_user_id=$2 AND external_chat_id=$3`, channelID, userID, chatID).
+FROM remote_bindings
+WHERE channel_id=$1 AND external_user_id=$2 AND (external_chat_id=$3 OR external_chat_id='')
+ORDER BY CASE WHEN external_chat_id=$3 THEN 0 ELSE 1 END
+LIMIT 1`, channelID, userID, chatID).
 		Scan(&b.ID, &b.ChannelID, &b.ExternalUserID, &b.ExternalChatID, &b.DisplayName, &b.ConversationID, &b.CreatedAt, &b.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil

@@ -66,6 +66,7 @@ import type {
   PromptVersion,
   RemoteBinding,
   RemoteChannel,
+  RemotePairingRequest,
   SessionTokenUsage,
   Settings,
   Severity,
@@ -780,8 +781,12 @@ export const api = {
     post<{ status: string; channel: RemoteChannel }>(`/remote/channels/${id}/wechat/login/poll`, {
       verify_code: verifyCode,
     }),
-  createRemotePairingCode: (id: number) =>
-    post<{ code: string; command: string; expires_at: string }>(`/remote/channels/${id}/pairing-code`, {}),
+  remotePairingRequests: (channelId?: number) =>
+    get<{ requests: RemotePairingRequest[] }>(
+      `/remote/pairing-requests${channelId ? `?channel_id=${encodeURIComponent(channelId)}` : ""}`,
+    ).then((r) => arr(r.requests)),
+  approveRemotePairing: (id: number) => post<{ binding: RemoteBinding }>(`/remote/pairing-requests/${id}/approve`, {}),
+  dismissRemotePairing: (id: number) => del<{ dismissed: number }>(`/remote/pairing-requests/${id}`),
   remoteBindings: (channelId?: number) =>
     get<{ bindings: RemoteBinding[] }>(
       `/remote/bindings${channelId ? `?channel_id=${encodeURIComponent(channelId)}` : ""}`,

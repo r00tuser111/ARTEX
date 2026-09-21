@@ -27,23 +27,26 @@ func TestRemoteChannelPairingBindingAndMessageDedup(t *testing.T) {
 		}
 	})
 
-	if err := d.CreateRemotePairingCode(channel.ID, "old-code-hash", time.Now().Add(time.Minute)); err != nil {
+	request, created, err := d.GetOrCreateRemotePairingRequest(channel.ID, "pair-user", "pair-chat", "pair tester",
+		"ABCDEFGH", "code-hash", time.Now().Add(time.Hour))
+	if err != nil || !created || request.Code != "ABCDEFGH" {
+		t.Fatalf("pairing request=%+v created=%v err=%v", request, created, err)
+	}
+	repeated, created, err := d.GetOrCreateRemotePairingRequest(channel.ID, "pair-user", "pair-chat", "pair tester",
+		"ZZZZZZZZ", "other-hash", time.Now().Add(time.Hour))
+	if err != nil || created || repeated.ID != request.ID || repeated.Code != request.Code {
+		t.Fatalf("repeated pairing request=%+v created=%v err=%v", repeated, created, err)
+	}
+	requests, err := d.ListRemotePairingRequests(channel.ID)
+	if err != nil || len(requests) != 1 || requests[0].ID != request.ID {
+		t.Fatalf("pairing requests=%+v err=%v", requests, err)
+	}
+	if err := d.ResolveRemotePairingRequest(request.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.CreateRemotePairingCode(channel.ID, "code-hash", time.Now().Add(time.Minute)); err != nil {
-		t.Fatal(err)
-	}
-	ok, err := d.ConsumeRemotePairingCode(channel.ID, "old-code-hash")
-	if err != nil || ok {
-		t.Fatalf("replaced pairing consume=(%v,%v), want false,nil", ok, err)
-	}
-	ok, err = d.ConsumeRemotePairingCode(channel.ID, "code-hash")
-	if err != nil || !ok {
-		t.Fatalf("first pairing consume=(%v,%v)", ok, err)
-	}
-	ok, err = d.ConsumeRemotePairingCode(channel.ID, "code-hash")
-	if err != nil || ok {
-		t.Fatalf("second pairing consume=(%v,%v), want false,nil", ok, err)
+	requests, err = d.ListRemotePairingRequests(channel.ID)
+	if err != nil || len(requests) != 0 {
+		t.Fatalf("resolved pairing requests=%+v err=%v", requests, err)
 	}
 
 	conv, err := d.CreateConversation("auto", "remote-test", nil)
@@ -54,6 +57,14 @@ func TestRemoteChannelPairingBindingAndMessageDedup(t *testing.T) {
 	binding, err := d.CreateRemoteBinding(channel.ID, "user", "chat", "tester", conv.ID)
 	if err != nil || binding.ConversationID != conv.ID {
 		t.Fatalf("binding=%+v err=%v", binding, err)
+	}
+	qrBinding, err := d.CreateRemoteBinding(channel.ID, "qr-user", "", "scanner", conv.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolvedQRBinding, err := d.GetRemoteBinding(channel.ID, "qr-user", "dynamic-session-id")
+	if err != nil || resolvedQRBinding == nil || resolvedQRBinding.ID != qrBinding.ID {
+		t.Fatalf("QR binding fallback=%+v err=%v", resolvedQRBinding, err)
 	}
 
 	input := &RemoteMessage{ID: fmt.Sprintf("job-%d", suffix), ChannelID: channel.ID, ExternalMessageID: "event-1",

@@ -30,7 +30,7 @@ import (
 
 const (
 	remoteMaxBody               = 256 << 10
-	remotePairingTTL            = 10 * time.Minute
+	remotePairingTTL            = time.Hour
 	remoteDefaultAgent          = "auto"
 	weChatDefaultBaseURL        = "https://ilinkai.weixin.qq.com"
 	weChatChannelVersion        = "2.4.9"
@@ -250,29 +250,95 @@ func (s *Server) deleteRemoteChannel(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"deleted": id})
 }
 
-func (s *Server) createRemotePairingCode(w http.ResponseWriter, r *http.Request) {
-	id, ok := pathInt(r, "id")
-	if !ok {
-		writeErr(w, 400, "bad channel id")
+func randomRemotePairingCode() (string, error) {
+	// 32 symbols makes the random-byte mask unbiased. Ambiguous 0/O/1/I are
+	// intentionally absent, matching the human-friendly DM pairing convention.
+	const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+	raw := make([]byte, 8)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	for i := range raw {
+		raw[i] = alphabet[int(raw[i])&31]
+	}
+	return string(raw), nil
+}
+
+func (s *Server) listRemotePairingRequests(w http.ResponseWriter, r *http.Request) {
+	id, _ := strconv.ParseInt(r.URL.Query().Get("channel_id"), 10, 64)
+	requests, err := s.m.pg.ListRemotePairingRequests(id)
+	if err != nil {
+		writeErr(w, 500, err.Error())
 		return
 	}
-	if c, _ := s.m.pg.GetRemoteChannel(id); c == nil {
+	writeJSON(w, 200, map[string]any{"requests": requests})
+}
+
+func (s *Server) ensureRemoteBinding(c *db.RemoteChannel, userID, chatID, displayName string) (*db.RemoteBinding, error) {
+	if existing, err := s.m.pg.GetRemoteBinding(c.ID, userID, chatID); err != nil {
+		return nil, err
+	} else if existing != nil {
+		return existing, nil
+	}
+	label := strings.TrimSpace(displayName)
+	if label == "" {
+		label = userID
+	}
+	conv, err := s.m.pg.CreateConversation(remoteDefaultAgent, c.Name+" · "+label, nil)
+	if err != nil {
+		return nil, err
+	}
+	binding, err := s.m.pg.CreateRemoteBinding(c.ID, userID, chatID, displayName, conv.ID)
+	if err != nil {
+		_ = s.m.pg.DeleteConversation(conv.ID)
+		return nil, err
+	}
+	return binding, nil
+}
+
+func (s *Server) approveRemotePairingRequest(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathInt(r, "id")
+	if !ok {
+		writeErr(w, 400, "bad pairing request id")
+		return
+	}
+	request, err := s.m.pg.GetRemotePairingRequest(id)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	if request == nil {
+		writeErr(w, 404, "配对请求不存在或已过期")
+		return
+	}
+	c, err := s.m.pg.GetRemoteChannel(request.ChannelID)
+	if err != nil || c == nil {
 		writeErr(w, 404, "远程渠道不存在")
 		return
 	}
-	b := make([]byte, 4)
-	if _, err := rand.Read(b); err != nil {
+	binding, err := s.ensureRemoteBinding(c, request.ExternalUserID, request.ExternalChatID, request.DisplayName)
+	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	n := (int(b[0])<<24 | int(b[1])<<16 | int(b[2])<<8 | int(b[3])) & 0x7fffffff
-	code := fmt.Sprintf("%06d", n%1000000)
-	expires := time.Now().Add(remotePairingTTL)
-	if err := s.m.pg.CreateRemotePairingCode(id, s.remotePairingHash(code), expires); err != nil {
+	if err := s.m.pg.ResolveRemotePairingRequest(request.ID); err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]any{"code": code, "expires_at": expires, "command": "/bind " + code})
+	writeJSON(w, 200, map[string]any{"binding": binding})
+}
+
+func (s *Server) dismissRemotePairingRequest(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathInt(r, "id")
+	if !ok {
+		writeErr(w, 400, "bad pairing request id")
+		return
+	}
+	if err := s.m.pg.ResolveRemotePairingRequest(id); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"dismissed": id})
 }
 
 func (s *Server) listRemoteBindings(w http.ResponseWriter, r *http.Request) {
@@ -335,7 +401,7 @@ func (s *Server) processRemoteMessage(c *db.RemoteChannel, job *db.RemoteMessage
 	if e := s.m.pg.FinishRemoteMessage(job.ID, status, reply, errText); e != nil {
 		log.Printf("[remote] finish job %s: %v", job.ID, e)
 	}
-	if deliver != nil {
+	if deliver != nil && strings.TrimSpace(reply) != "" {
 		if e := deliver(reply); e != nil {
 			log.Printf("[remote] deliver job %s: %v", job.ID, e)
 		}
@@ -343,36 +409,27 @@ func (s *Server) processRemoteMessage(c *db.RemoteChannel, job *db.RemoteMessage
 }
 
 func (s *Server) executeRemoteMessage(c *db.RemoteChannel, job *db.RemoteMessage, in remoteInbound) (string, error) {
-	if code, ok := parsePairCommand(in.Text); ok {
-		if existing, err := s.m.pg.GetRemoteBinding(c.ID, in.SenderID, in.ChatID); err != nil {
-			return "", err
-		} else if existing != nil {
-			_ = s.m.pg.StartRemoteMessage(job.ID, existing.ConversationID)
-			return "此账号已经绑定，无需重复配对。发送 /help 查看可用命令。", nil
-		}
-		matched, err := s.m.pg.ConsumeRemotePairingCode(c.ID, s.remotePairingHash(code))
-		if err != nil {
-			return "", err
-		}
-		if !matched {
-			return "配对码无效、已使用或已过期。请在 ARTEX「远程控制」页面重新生成。", nil
-		}
-		conv, err := s.m.pg.CreateConversation(remoteDefaultAgent, c.Name+" · "+in.SenderID, nil)
-		if err != nil {
-			return "", err
-		}
-		if _, err := s.m.pg.CreateRemoteBinding(c.ID, in.SenderID, in.ChatID, in.SenderName, conv.ID); err != nil {
-			return "", err
-		}
-		_ = s.m.pg.StartRemoteMessage(job.ID, conv.ID)
-		return "绑定成功。现在可直接用自然语言管理 ARTEX；发送 /help 查看快捷命令。", nil
-	}
 	binding, err := s.m.pg.GetRemoteBinding(c.ID, in.SenderID, in.ChatID)
 	if err != nil {
 		return "", err
 	}
 	if binding == nil {
-		return "此账号尚未绑定 ARTEX。请先在网页「远程控制」中生成配对码，然后发送：/bind 123456", nil
+		code, err := randomRemotePairingCode()
+		if err != nil {
+			return "", err
+		}
+		request, created, err := s.m.pg.GetOrCreateRemotePairingRequest(c.ID, in.SenderID, in.ChatID,
+			in.SenderName, code, s.remotePairingHash(code), time.Now().Add(remotePairingTTL))
+		if errors.Is(err, db.ErrRemotePairingLimit) {
+			return "", nil
+		}
+		if err != nil {
+			return "", err
+		}
+		if !created {
+			return "", nil
+		}
+		return fmt.Sprintf("ARTEX 尚未授权此微信账号。\n\n配对码：%s\n\n请让 ARTEX 管理员在「系统 → 远程控制 → 待审批配对」中核对并批准。配对码 1 小时内有效。", request.Code), nil
 	}
 	if err := s.m.pg.StartRemoteMessage(job.ID, binding.ConversationID); err != nil {
 		return "", err
@@ -392,14 +449,6 @@ func (s *Server) executeRemoteMessage(c *db.RemoteChannel, job *db.RemoteMessage
 		return reply, err
 	}
 	return s.runRemoteAutoConversation(binding.ConversationID, in.Text)
-}
-
-func parsePairCommand(text string) (string, bool) {
-	f := strings.Fields(strings.TrimSpace(text))
-	if len(f) == 2 && (strings.EqualFold(f[0], "/bind") || f[0] == "绑定") {
-		return f[1], true
-	}
-	return "", false
 }
 
 func (s *Server) remoteCommand(text string) (string, bool, error) {
@@ -625,6 +674,11 @@ func doWeChatJSON(ctx context.Context, client *http.Client, method, endpoint str
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
+		detail, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		message := strings.TrimSpace(string(detail))
+		if message != "" {
+			return fmt.Errorf("微信 Claw HTTP %d: %s", resp.StatusCode, message)
+		}
 		return fmt.Errorf("微信 Claw HTTP %d", resp.StatusCode)
 	}
 	if out == nil {
@@ -713,9 +767,9 @@ func (s *Server) pollWeChatLogin(w http.ResponseWriter, r *http.Request) {
 	client := &http.Client{Timeout: weChatDefaultLongPoll + 5*time.Second}
 	endpoint := strings.TrimRight(base, "/") + "/ilink/bot/get_qrcode_status?" + values.Encode()
 	if err := doWeChatJSON(r.Context(), client, http.MethodGet, endpoint, nil, cfg, false, &status); err != nil {
-		// The QR status endpoint is a long poll. Transient network/gateway
-		// failures mean "still waiting", matching the official client behavior.
-		writeJSON(w, 200, map[string]any{"status": "wait", "channel": remoteChannelView(r, c)})
+		// The UI keeps polling after transient failures, but returning the error
+		// makes persistent routing/authentication problems visible to developers.
+		writeErr(w, 502, err.Error())
 		return
 	}
 	if status.RedirectHost != "" && status.Status == "scaned_but_redirect" {
@@ -744,6 +798,14 @@ func (s *Server) pollWeChatLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if status.Status == "confirmed" {
+		// The user who scanned the login QR is the initial trusted operator in
+		// Tencent's implementation. Authorize that user immediately; other users
+		// still go through the short-code approval flow on first message.
+		if status.ILinkUserID != "" {
+			if _, bindErr := s.ensureRemoteBinding(updated, status.ILinkUserID, "", "微信扫码用户"); bindErr != nil {
+				log.Printf("[wechat-claw] authorize QR user %s: %v", status.ILinkUserID, bindErr)
+			}
+		}
 		s.restartWeChatChannel(updated)
 	}
 	writeJSON(w, 200, map[string]any{"status": status.Status, "channel": remoteChannelView(r, updated)})

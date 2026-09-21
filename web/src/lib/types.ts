@@ -974,6 +974,17 @@ export interface RemoteBinding {
   updated_at: string;
 }
 
+export interface RemotePairingRequest {
+  id: number;
+  channel_id: number;
+  code: string;
+  external_user_id: string;
+  external_chat_id: string;
+  display_name: string;
+  expires_at: string;
+  created_at: string;
+}
+
 // ---- LLM config ----
 export interface LLMProfile {
   id: string;

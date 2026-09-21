@@ -1019,12 +1019,25 @@ CREATE TABLE IF NOT EXISTS remote_pairing_codes (
     id         BIGSERIAL PRIMARY KEY,
     channel_id BIGINT NOT NULL REFERENCES remote_channels(id) ON DELETE CASCADE,
     code_hash  TEXT NOT NULL,
+    code       TEXT NOT NULL DEFAULT '',
+    external_user_id TEXT NOT NULL DEFAULT '',
+    external_chat_id TEXT NOT NULL DEFAULT '',
+    display_name TEXT NOT NULL DEFAULT '',
     expires_at TIMESTAMPTZ NOT NULL,
     used_at    TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- 旧版由网页先生成匿名 6 位码；新版改为陌生用户首次私聊后自动生成 8 位码。
+-- schema.sql 每次启动都会执行，因此旧库必须幂等补列。
+ALTER TABLE remote_pairing_codes ADD COLUMN IF NOT EXISTS code TEXT NOT NULL DEFAULT '';
+ALTER TABLE remote_pairing_codes ADD COLUMN IF NOT EXISTS external_user_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE remote_pairing_codes ADD COLUMN IF NOT EXISTS external_chat_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE remote_pairing_codes ADD COLUMN IF NOT EXISTS display_name TEXT NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS idx_remote_pairing_active ON remote_pairing_codes(channel_id, expires_at)
     WHERE used_at IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_remote_pairing_sender_active
+    ON remote_pairing_codes(channel_id, external_user_id, external_chat_id)
+    WHERE used_at IS NULL AND external_user_id <> '';
 
 -- 每条外部消息是一条异步执行/审计记录；(channel,event) 唯一约束承担渠道重试去重。
 CREATE TABLE IF NOT EXISTS remote_messages (

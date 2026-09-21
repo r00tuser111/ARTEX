@@ -14,16 +14,14 @@ import (
 	"testing"
 )
 
-func TestParsePairCommand(t *testing.T) {
-	for _, tc := range []struct {
-		input string
-		code  string
-		ok    bool
-	}{{"/bind 123456", "123456", true}, {" 绑定 abcdef ", "abcdef", true}, {"/bind", "", false}, {"hello", "", false}} {
-		got, ok := parsePairCommand(tc.input)
-		if got != tc.code || ok != tc.ok {
-			t.Fatalf("parsePairCommand(%q)=(%q,%v), want (%q,%v)", tc.input, got, ok, tc.code, tc.ok)
-		}
+func TestRandomRemotePairingCode(t *testing.T) {
+	const allowed = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+	first, err := randomRemotePairingCode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) != 8 || strings.Trim(first, allowed) != "" {
+		t.Fatalf("pairing code %q is not an 8-character human-friendly code", first)
 	}
 }
 
