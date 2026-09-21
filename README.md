@@ -291,15 +291,28 @@ CGO_ENABLED=0 go build -tags embedui -o artex ./cmd/artex
 
 本版历史记录通过漏洞详情和会话查看，暂未纳入漏洞报告导出或任务归档包，也未自动关联流量包。演示模式只生成明确标注的模拟记录，不请求真实目标。
 
-### 本地运行与测试
+### 开发环境
 
 ```bash
-./dev.sh    # 后端(:8787) + 流量代理(:8788) + 前端 next dev(:5173) → http://localhost:5173
+./dev.sh local     # Go/Next.js 在本机运行；未配置数据库时自动用 Docker 启动 PostgreSQL
+./dev.sh docker    # PostgreSQL、Go、Next.js 全部在开发容器中运行
 ```
 
-- 后端：`go run ./cmd/artex`（不带 `-tags embedui` 则不内嵌前端）
-- 前端：`cd web && npm run dev`（`/api` 反代到后端，带热更新）
-- 测试：`go test ./...`
+两个模式都提供前端 `http://localhost:5173`、后端 `http://localhost:8787` 和流量代理 `127.0.0.1:8788`。本地模式需要 Go、Node.js 22/npm；全 Docker 模式只需要 Docker Compose v2。开发 Compose 使用独立的 `artex-dev` 项目和数据卷，不会复用生产 Compose 数据。
+
+```bash
+./dev.sh db                 # 只启动开发 PostgreSQL
+./dev.sh logs backend       # 查看 Docker 后端日志
+./dev.sh down               # 停止并保留开发数据
+./dev.sh clean              # 停止并删除开发数据库/data/依赖缓存
+```
+
+依赖准备、已有数据库接入、端口变量、测试命令和故障排查详见 [DEVELOPMENT.md](DEVELOPMENT.md)。
+
+- 后端：`go run ./cmd/artex`（开发模式不内嵌前端）
+- 前端：`cd web && npm run dev`（`/api` 反代到后端并支持热更新）
+- 后端测试：`go test ./...`
+- 前端检查：`cd web && npm run check && npm run build`
 - Mock 预览（无后端）：`cd web && NEXT_PUBLIC_MOCK=1 npm run dev`
 
 ---

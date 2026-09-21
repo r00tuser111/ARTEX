@@ -37,7 +37,8 @@ services:
       - bash
       - -ec
       - >-
-        go run ./cmd/artex
+        go build -o /runtime/artex-dev ./cmd/artex &&
+        exec /runtime/artex-dev
         -addr :8787
         -proxy :8788
         -data /workspace/data
@@ -53,8 +54,15 @@ services:
     ports:
       - "127.0.0.1:${ARTEX_DEV_API_PORT:-8787}:8787"
       - "127.0.0.1:${ARTEX_DEV_PROXY_PORT:-8788}:8788"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8787/api/health >/dev/null"]
+      interval: 2s
+      timeout: 3s
+      retries: 60
+      start_period: 10s
     volumes:
       - .:/workspace
+      - artex-dev-state:/runtime
       - artex-dev-data:/workspace/data
       - artex-dev-go-mod:/go/pkg/mod
       - artex-dev-go-build:/root/.cache/go-build
@@ -63,7 +71,8 @@ services:
   frontend:
     <<: *runtime
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     command:
       - bash
       - -ec
@@ -85,6 +94,7 @@ services:
 
 volumes:
   artex-dev-postgres:
+  artex-dev-state:
   artex-dev-data:
   artex-dev-go-mod:
   artex-dev-go-build:
