@@ -4,7 +4,8 @@ x-runtime: &runtime
   build:
     context: .
     dockerfile: Dockerfile.dev
-  image: artex-dev-runtime:local
+  # Keep service-default image names. Giving backend and frontend one shared
+  # tag makes concurrent BuildKit exports race with "image already exists".
   init: true
   working_dir: /workspace
   volumes:

@@ -38,7 +38,7 @@ usage() {
   ARTEX_DEV_DB_USER=artex      开发数据库账号
   ARTEX_DEV_DB_PASSWORD=artex-dev
   ARTEX_DEV_DB_NAME=artex
-  ARTEX_DEV_SKIP_INSTALL=1     跳过 go mod download / npm ci
+  ARTEX_DEV_SKIP_INSTALL=1     跳过本地前端依赖检查 / npm ci
 
 示例：
   ./dev.sh                     # 等同 ./dev.sh local
@@ -102,7 +102,7 @@ wait_for_dev_db() {
   dev_db_values
   for attempt in $(seq 1 60); do
     if "${COMPOSE[@]}" exec -T postgres pg_isready -U "$DEV_DB_USER" -d "$DEV_DB_NAME" >/dev/null 2>&1; then
-      ok "PostgreSQL 已就绪（127.0.0.1:$DEV_DB_PORT）"
+      ok "PostgreSQL 已就绪（127.0.0.1:${DEV_DB_PORT}）"
       return 0
     fi
     sleep 1
@@ -144,8 +144,6 @@ prepare_local_dependencies() {
     return 0
   fi
 
-  info "准备 Go 依赖…"
-  go mod download
   if [[ ! -x web/node_modules/.bin/next || web/package-lock.json -nt web/node_modules/.package-lock.json ]]; then
     info "安装前端依赖（npm ci）…"
     (cd web && npm ci)

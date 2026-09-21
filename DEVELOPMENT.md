@@ -23,7 +23,7 @@
 脚本会依次执行：
 
 1. 读取 `.env` 中简单的 `KEY=VALUE` 配置；已经 export 的同名变量优先。
-2. 下载 Go 模块；缺少依赖或 lockfile 更新时运行 `npm ci`。
+2. 检查前端依赖，缺少依赖或 lockfile 更新时运行 `npm ci`；Go 在编译时按需下载缺少的模块。
 3. 如果没有 `ARTEX_PG_DSN` 和 `config.json`，自动启动隔离的 PostgreSQL 16 容器并等待健康检查通过。
 4. 同时运行 Go 后端和 Next.js 开发服务器。前端源码支持热更新；修改 Go 代码后重新运行脚本即可重启后端。
 
