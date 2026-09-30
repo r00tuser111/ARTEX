@@ -4,16 +4,13 @@
 
 AI 自主渗透测试系统（Go 后端 + Next.js 前端）
 
-
-🌐 **在线 Demo**： [https://artex-demo.vercel.app/](https://artex-demo.vercel.app/)
-
 </div>
+
+> **二次开发说明**：本仓库是基于 [Autumn-27/artex](https://github.com/Autumn-27/artex) 的二次开发分支，非官方版本。相较上游，主要改动是**页面一键更新支持可配置发布源与更新专用代理**（详见[更新升级](#更新升级)）。使用前请自行评估改动，遇到问题请在本仓库提 issue，勿反馈至上游。
 
 ---
 
 ## 截图预览
-
-> 完整交互见[在线 Demo](https://artex-demo.vercel.app/)。
 
 | 仪表盘（总览 / Token 消耗 / 活动流） | 任务列表 |
 | :---: | :---: |
@@ -536,18 +533,6 @@ flowchart TB
 ```
 
 于是攻击链在“事件驱动 + 无状态会话”的环境下依然**稳定推进、不重复、不错序**——这是 ARTEX 能自主走完多步利用链的关键。
-
----
-
-## 交流群
-
-扫码关注微信公众号 **SecSentry**，在公众号后台私信即可入群交流。
-
-<div align="center">
-
-<img src="screenshots/wx.png" alt="微信公众号 SecSentry" width="480" />
-
-</div>
 
 ---
 ## 参考
