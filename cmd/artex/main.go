@@ -91,7 +91,6 @@ func run() int {
 	}
 
 	applyUpdateRepo()
-	applyUpdateProxy()
 
 	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -147,54 +146,32 @@ func run() int {
 	return code
 }
 
-// applyUpdateRepo points the one-click updater at a non-official GitHub release
+// applyUpdateRepo points the one-click updater at a non-default GitHub release
 // source when the operator configured one (env ARTEX_UPDATE_REPO or config.json's
 // update.repo), and tells the server package where the value came from so the
 // update page can show it.
 //
 // A bad value is a warning, not a fatal: the whole platform refusing to boot over
 // a typo in an optional updater knob would be a worse outcome than falling back to
-// the official source. The fallback is not silent though — it is logged here and
+// the default source. The fallback is not silent though — it is logged here and
 // surfaced on the update page as repo_error.
 func applyUpdateRepo() {
 	repo, source := config.UpdateRepo()
 	if repo == "" {
-		return // 官方默认源，server 包里的默认值已经对了
+		return // 默认源，server 包里的默认值已经对了
 	}
 	if err := selfupdate.SetRepo(repo); err != nil {
-		log.Printf("[update] 发布源配置无效（来自%s），已退回官方源 %s：%v", source, selfupdate.DefaultRepo, err)
+		log.Printf("[update] 发布源配置无效（来自%s），已退回默认源 %s：%v", source, selfupdate.DefaultRepo, err)
 		server.SetUpdateSource(source, err.Error())
 		return
 	}
 	server.SetUpdateSource(source, "")
-	if selfupdate.IsOfficialRepo() {
-		return // 显式配成了官方源，没什么可提醒的
+	if selfupdate.IsDefaultRepo() {
+		return // 显式配成了默认源，没什么可提醒的
 	}
-	// 非官方源值得在启动日志里留一条显眼的记录：一键更新装上的二进制会直接替换
+	// 非默认源值得在启动日志里留一条显眼的记录：一键更新装上的二进制会直接替换
 	// artex 本体，运维日后排查"这台机器上跑的到底是谁的构建"时要能追到这里。
-	log.Printf("[update] 一键更新的发布源已改为非官方仓库 %s（来自%s）", selfupdate.Repo(), source)
-}
-
-// applyUpdateProxy points the update path at its own egress proxy when one is
-// configured. Without it the update path keeps following the global egress proxy
-// from the UI, so existing deployments are unaffected.
-//
-// Same "warn, don't die" stance as applyUpdateRepo: a malformed proxy must not keep
-// the platform from booting. The log and the update page both say so, and the
-// update path falls back to the global proxy.
-func applyUpdateProxy() {
-	proxy, source := config.UpdateProxy()
-	if proxy == "" {
-		return
-	}
-	if err := selfupdate.SetProxy(proxy); err != nil {
-		log.Printf("[update] 更新代理配置无效（来自%s），更新链路改用全局出口代理：%v", source, err)
-		server.SetUpdateProxySource(source, err.Error())
-		return
-	}
-	server.SetUpdateProxySource(source, "")
-	// 地址脱敏后再进日志：代理串常带 user:pass，而日志页面对所有登录用户可见。
-	log.Printf("[update] 更新链路使用专用代理 %s（来自%s）", selfupdate.RedactProxy(proxy), source)
+	log.Printf("[update] 一键更新的发布源已改为非默认仓库 %s（来自%s）", selfupdate.Repo(), source)
 }
 
 // shutdownContext deliberately does not derive from signalCtx. If it did, the

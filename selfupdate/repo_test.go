@@ -28,20 +28,6 @@ func withRepo(t *testing.T, v string) {
 	}
 }
 
-// withProxy 在测试结束后还原更新专用代理。
-func withProxy(t *testing.T, v string) {
-	t.Helper()
-	old := Proxy()
-	t.Cleanup(func() {
-		if err := SetProxy(old); err != nil {
-			t.Errorf("还原更新代理: %v", err)
-		}
-	})
-	if err := SetProxy(v); err != nil {
-		t.Fatalf("SetProxy(%q): %v", v, err)
-	}
-}
-
 func TestValidateRepoAccepts(t *testing.T) {
 	cases := []struct {
 		in, want string
@@ -132,27 +118,27 @@ func TestSetRepoAffectsLatestURL(t *testing.T) {
 	}
 }
 
-func TestDefaultRepoIsOfficial(t *testing.T) {
-	if Repo() != DefaultRepo || !IsOfficialRepo() {
-		t.Fatalf("默认发布源应为官方源 %s，得到 %s", DefaultRepo, Repo())
+func TestDefaultRepoIsDefault(t *testing.T) {
+	if Repo() != DefaultRepo || !IsDefaultRepo() {
+		t.Fatalf("默认发布源应为 %s，得到 %s", DefaultRepo, Repo())
 	}
 	if got, want := latestURL(), "https://api.github.com/repos/"+DefaultRepo+"/releases/latest"; got != want {
 		t.Errorf("latestURL() = %q, want %q", got, want)
 	}
 }
 
-// IsOfficialRepo 决定前端要不要标红警告并要求二次确认，所以它对"改成了别的源"
-// 必须敏感，对"显式配成官方源"必须不报警。
-func TestIsOfficialRepo(t *testing.T) {
+// IsDefaultRepo 决定前端要不要标红警告并要求二次确认，所以它对"改成了别的源"
+// 必须敏感，对"显式配成默认源"必须不报警。
+func TestIsDefaultRepo(t *testing.T) {
 	withRepo(t, "someone/fork")
-	if IsOfficialRepo() {
-		t.Error("非官方源不应被判为官方")
+	if IsDefaultRepo() {
+		t.Error("非默认源不应被判为默认")
 	}
 	if err := SetRepo("  " + DefaultRepo + "  "); err != nil {
 		t.Fatal(err)
 	}
-	if !IsOfficialRepo() {
-		t.Error("显式配成官方源（带空格）应被判为官方")
+	if !IsDefaultRepo() {
+		t.Error("显式配成默认源（带空格）应被判为默认")
 	}
 }
 
@@ -185,39 +171,8 @@ func TestValidateProxyURL(t *testing.T) {
 
 // 专用代理必须盖过调用方传入的全局出口代理，没配时又必须老老实实退回去——
 // 后者保证既有部署（只配了全局代理）的更新链路行为不变。
-func TestResolveProxyPrecedence(t *testing.T) {
-	withProxy(t, "socks5://127.0.0.1:1080")
-	got, dedicated := ResolveProxy("http://127.0.0.1:7890")
-	if got != "socks5://127.0.0.1:1080" || !dedicated {
-		t.Errorf("专用代理应优先，得到 (%q, %v)", got, dedicated)
-	}
-
-	if err := SetProxy(""); err != nil {
-		t.Fatal(err)
-	}
-	got, dedicated = ResolveProxy("http://127.0.0.1:7890")
-	if got != "http://127.0.0.1:7890" || dedicated {
-		t.Errorf("未配专用代理时应退回全局代理，得到 (%q, %v)", got, dedicated)
-	}
-
-	if got, dedicated = ResolveProxy(""); got != "" || dedicated {
-		t.Errorf("两者都没配应为直连，得到 (%q, %v)", got, dedicated)
-	}
-	// 全局代理那头传来的空白值不能变成一个"看起来配了"的代理。
-	if got, _ = ResolveProxy("   "); got != "" {
-		t.Errorf("全空格的全局代理应视为直连，得到 %q", got)
-	}
-}
-
-func TestSetProxyKeepsCurrentValueOnError(t *testing.T) {
-	withProxy(t, "socks5://127.0.0.1:1080")
-	if err := SetProxy("ftp://nope"); err == nil {
-		t.Fatal("SetProxy 对无效协议应当报错")
-	}
-	if got := Proxy(); got != "socks5://127.0.0.1:1080" {
-		t.Errorf("校验失败后代理被改成了 %q", got)
-	}
-}
+// 注：优先级逻辑已上移到 server.Manager.ResolveUpdateProxy，selfupdate 只负责
+// 拿到最终的代理串去拨号，相关用例见 server 包。
 
 // 代理地址会回显到更新卡片上，而那个页面对所有登录用户开放。密码泄出去就等于
 // 把出网凭据（常常还是内网跳板的凭据）发给了每个能登录的人。
@@ -240,15 +195,14 @@ func TestRedactProxy(t *testing.T) {
 	}
 }
 
-// NewClient 是这个功能真正的落点：配了代理就必须真的从那里出网。
-func TestNewClientUsesResolvedProxy(t *testing.T) {
+// NewClient 是这个功能真正的落点：传了代理就必须真的从那里出网。
+func TestNewClientUsesProxy(t *testing.T) {
 	req, err := http.NewRequest(http.MethodGet, latestURL(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	withProxy(t, "socks5://127.0.0.1:1080")
-	tr, ok := NewClient("http://127.0.0.1:7890").Transport.(*http.Transport)
+	tr, ok := NewClient("socks5://127.0.0.1:1080").Transport.(*http.Transport)
 	if !ok {
 		t.Fatal("Transport 类型不是 *http.Transport")
 	}
@@ -263,13 +217,15 @@ func TestNewClientUsesResolvedProxy(t *testing.T) {
 		t.Errorf("客户端用的代理 = %v，want socks5://127.0.0.1:1080", pu)
 	}
 
-	// 两者都没配时必须直连：留一个空的 ProxyURL 会让请求发往空地址而彻底失败。
-	if err := SetProxy(""); err != nil {
-		t.Fatal(err)
-	}
+	// 传空串时必须直连：留一个空的 ProxyURL 会让请求发往空地址而彻底失败。
 	tr, _ = NewClient("").Transport.(*http.Transport)
 	if tr.Proxy != nil {
-		t.Error("未配任何代理时 Transport.Proxy 应为 nil（直连）")
+		t.Error("未传代理时 Transport.Proxy 应为 nil（直连）")
+	}
+	// 全空格同样按直连处理。
+	tr, _ = NewClient("   ").Transport.(*http.Transport)
+	if tr.Proxy != nil {
+		t.Error("全空格代理应按直连处理，Transport.Proxy 应为 nil")
 	}
 }
 
@@ -287,9 +243,8 @@ func TestNewClientActuallyDialsProxy(t *testing.T) {
 	}))
 	defer proxy.Close()
 
-	withProxy(t, proxy.URL)
 	// 请求必然失败（代理不给建隧道），我们要的是"代理被访问到了"这个事实。
-	resp, err := NewClient("").Get(latestURL())
+	resp, err := NewClient(proxy.URL).Get(latestURL())
 	if err == nil {
 		resp.Body.Close()
 	}

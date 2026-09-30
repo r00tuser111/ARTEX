@@ -19,6 +19,7 @@ import (
 	"github.com/Autumn-27/artex/enrich"
 	"github.com/Autumn-27/artex/guard"
 	"github.com/Autumn-27/artex/intercept"
+	"github.com/Autumn-27/artex/selfupdate"
 	"github.com/Autumn-27/artex/traffic"
 	actool "github.com/Autumn-27/norma/tool"
 )
@@ -245,6 +246,12 @@ type Manager struct {
 	// capture is on it becomes the MITM's upstream; when capture is off it is
 	// injected into agent bash env / WebFetch directly. See ProxyAddr.
 	globalProxy string
+	// updateProxy is a dedicated egress proxy for the one-click updater only
+	// (http/https/socks5). Empty = fall back to globalProxy, then direct. Kept
+	// separate because the update route to GitHub often differs from the target
+	// traffic route. Page-editable and DB-persisted; unlike the release source it
+	// carries no RCE risk (SHA256SUMS + TLS + host allowlist still apply).
+	updateProxy string
 }
 
 // Settings keys the UI toggles at runtime.
@@ -260,6 +267,9 @@ const (
 	// (http/https/socks5). Empty = direct. Distinct from web_search_proxy (which
 	// only routes the search backend) and the per-profile LLM proxy.
 	settingGlobalProxy = "global_proxy"
+	// settingUpdateProxy is the dedicated egress proxy for the one-click updater.
+	// Empty = fall back to global_proxy, then direct.
+	settingUpdateProxy = "update_proxy"
 	settingWorkers     = "workers"
 	settingLLMRecord   = "llm_record"
 	// LLM 轮询(故障转移)。默认关闭——开启后走「全局激活配置」的 agent 在当前配置
@@ -438,6 +448,11 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 		if err := m.traffic.SetUpstreamProxy(m.globalProxy); err != nil {
 			log.Printf("[proxy] 全局代理 %q 无效，已忽略: %v", m.globalProxy, err)
 		}
+	}
+	// Dedicated update proxy (default: empty → fall back to globalProxy at use
+	// time). Only the one-click updater reads it, so nothing to reconcile here.
+	if v, ok, _ := pg.GetSetting(settingUpdateProxy); ok {
+		m.updateProxy = strings.TrimSpace(v)
 	}
 	m.enrich = enrich.New(m.assets, m.ProxyAddr, 4)
 	// Reconcile the seeded browser MCP with the persisted capture state, so a
@@ -798,6 +813,46 @@ func (m *Manager) SetGlobalProxy(raw string) error {
 	// Keep the browser MCP's egress in sync with the new global proxy too.
 	m.syncBrowserMCPProxy()
 	return nil
+}
+
+// UpdateProxy returns the dedicated update egress proxy (empty = fall back to the
+// global proxy, then direct).
+func (m *Manager) UpdateProxy() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.updateProxy
+}
+
+// SetUpdateProxy validates and persists the dedicated update egress proxy
+// (http/https/socks5, optional user:pass; empty = clear). Nothing else consumes
+// it, so there is no MITM/agent rebuild to trigger — the next update check picks
+// it up on its own.
+func (m *Manager) SetUpdateProxy(raw string) error {
+	raw = strings.TrimSpace(raw)
+	if raw != "" {
+		if _, err := selfupdate.ValidateProxyURL(raw); err != nil {
+			return err
+		}
+	}
+	if err := m.pg.SetSetting(settingUpdateProxy, raw); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	m.updateProxy = raw
+	m.mu.Unlock()
+	return nil
+}
+
+// ResolveUpdateProxy reports the proxy the one-click updater should actually use.
+// Precedence: dedicated update proxy > global egress proxy > direct. dedicated
+// distinguishes the first two so the update page can say where it came from.
+func (m *Manager) ResolveUpdateProxy() (proxy string, dedicated bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.updateProxy != "" {
+		return m.updateProxy, true
+	}
+	return m.globalProxy, false
 }
 
 func (m *Manager) Close() error {

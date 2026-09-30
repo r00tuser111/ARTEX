@@ -52,20 +52,21 @@ func bootUpdateState() selfupdate.State {
 	return bootState
 }
 
-// 发布源与更新代理的"来源说明 + 配置错误"，由 main 在启动时注入（值本身存在
-// selfupdate 包里）。没有 setter 接口——两者都必须上服务器改环境变量或 config.json，
-// 见 selfupdate 包里那段注释。这里只负责把"现在用的是哪个源、走不走代理、分别是从
-// 哪配的"如实告诉前端，好让非官方源和意外的出网路径在页面上都藏不住。
+// 发布源的"来源说明 + 配置错误"，由 main 在启动时注入（发布源本身存在 selfupdate
+// 包里）。发布源没有 HTTP setter——它是 RCE 向量，必须上服务器改环境变量或
+// config.json，见 selfupdate 包里那段注释。这里只负责把"现在用的是哪个源、从哪配的"
+// 如实告诉前端，好让非默认源在页面上藏不住。
+//
+// 更新代理不在这里：它是页面可配的普通设置（存在 Manager / DB），运行时按
+// Manager.ResolveUpdateProxy 现取，无需启动期注入。
 var (
-	updSourceMu    sync.Mutex
-	updSourceFrom  = "内置默认值"
-	updSourceErr   string
-	updProxyFrom   string
-	updProxyCfgErr string
+	updSourceMu   sync.Mutex
+	updSourceFrom = "内置默认值"
+	updSourceErr  string
 )
 
 // SetUpdateSource 由 main 调用一次。from 是配置来源的人话描述；cfgErr 非空表示
-// 配了但值无效、已退回官方源。
+// 配了但值无效、已退回默认源。
 func SetUpdateSource(from, cfgErr string) {
 	updSourceMu.Lock()
 	defer updSourceMu.Unlock()
@@ -75,50 +76,46 @@ func SetUpdateSource(from, cfgErr string) {
 	updSourceErr = cfgErr
 }
 
-// SetUpdateProxySource 由 main 调用一次，语义同上（cfgErr 非空表示配了但无效、
-// 更新链路已退回全局出口代理）。
-func SetUpdateProxySource(from, cfgErr string) {
-	updSourceMu.Lock()
-	defer updSourceMu.Unlock()
-	updProxyFrom = from
-	updProxyCfgErr = cfgErr
-}
-
 // updateSourceInfo 拼出 /api/update/check 里描述"版本从哪来、怎么出网"的那几个
-// 字段。fallbackProxy 是系统设置里的全局出口代理，更新专用代理没配时就走它。
-func updateSourceInfo(fallbackProxy string) map[string]any {
+// 字段。dedicatedProxy 是页面配置的更新专用代理，globalProxy 是系统设置里的全局
+// 出口代理——前者为空时更新链路退回后者，再空则直连。
+func updateSourceInfo(dedicatedProxy, globalProxy string) map[string]any {
 	updSourceMu.Lock()
 	from, cfgErr := updSourceFrom, updSourceErr
-	proxyFrom, proxyErr := updProxyFrom, updProxyCfgErr
 	updSourceMu.Unlock()
 
 	out := map[string]any{
-		"repo":          selfupdate.Repo(),
-		"repo_official": selfupdate.IsOfficialRepo(),
-		"repo_source":   from,
+		"repo":         selfupdate.Repo(),
+		"repo_default": selfupdate.IsDefaultRepo(),
+		"repo_source":  from,
 	}
 	if cfgErr != "" {
-		// 配置无效时 from 描述的是那个被拒绝的配置项，而实际生效的是官方源。
+		// 配置无效时 from 描述的是那个被拒绝的配置项，而实际生效的是默认源。
 		// 两者一起给，用户才知道"我改的那个地方没生效"。
 		out["repo_error"] = cfgErr
 	}
 
-	proxy, dedicated := selfupdate.ResolveProxy(fallbackProxy)
-	out["proxy_set"] = proxy != ""
+	dedicatedProxy = strings.TrimSpace(dedicatedProxy)
+	globalProxy = strings.TrimSpace(globalProxy)
+	// 页面配置的更新专用代理里可能就存着原始密码，单独回显给前端填输入框；
+	// 展示用的 proxy 一律脱敏。
+	out["update_proxy"] = dedicatedProxy
+	effective := dedicatedProxy
+	if effective == "" {
+		effective = globalProxy
+	}
+	out["proxy_set"] = effective != ""
 	// 一律脱敏：代理串常带 user:pass，而这个接口对所有登录用户开放。
-	out["proxy"] = selfupdate.RedactProxy(proxy)
+	out["proxy"] = selfupdate.RedactProxy(effective)
 	switch {
-	case proxy == "":
+	case effective == "":
 		out["proxy_source"] = "未配置 · 直连 GitHub"
-	case dedicated:
-		out["proxy_source"] = "更新专用代理 · 来自" + proxyFrom
+	case dedicatedProxy != "":
+		out["proxy_source"] = "更新专用代理 · 页面配置"
 	default:
 		// 没配专用代理，但系统设置里有全局代理——更新链路一直是跟着它走的，
 		// 说清楚免得用户以为更新走的是直连。
 		out["proxy_source"] = "全局出口代理 · 系统设置"
-	}
-	if proxyErr != "" {
-		out["proxy_error"] = proxyErr
 	}
 	return out
 }
@@ -286,7 +283,7 @@ func (s *Server) updateCheck(w http.ResponseWriter, r *http.Request) {
 		mode = "docker"
 	}
 	boot := bootUpdateState()
-	out := updateSourceInfo(s.m.GlobalProxy())
+	out := updateSourceInfo(s.m.UpdateProxy(), s.m.GlobalProxy())
 	out["current"] = current
 	out["mode"] = mode
 	out["os"] = runtime.GOOS
@@ -297,7 +294,8 @@ func (s *Server) updateCheck(w http.ResponseWriter, r *http.Request) {
 
 	// 顶栏提示走缓存（默认）；用户点"检查更新"时带 force=1 强制回源。
 	force := r.URL.Query().Get("force") != ""
-	client := selfupdate.NewClient(s.m.GlobalProxy())
+	proxy, _ := s.m.ResolveUpdateProxy()
+	client := selfupdate.NewClient(proxy)
 	rel, err := relCache.get(r.Context(), client, force)
 	if err != nil {
 		out["error"] = err.Error()
@@ -341,7 +339,8 @@ func (s *Server) updateApply(w http.ResponseWriter, r *http.Request) {
 	current := BuildVersion
 
 	// 走缓存：确保装上的就是用户在界面上看到并确认的那个版本。
-	client := selfupdate.NewClient(s.m.GlobalProxy())
+	proxy, _ := s.m.ResolveUpdateProxy()
+	client := selfupdate.NewClient(proxy)
 	rel, err := relCache.get(r.Context(), client, false)
 	if err != nil {
 		writeErr(w, 502, err.Error())

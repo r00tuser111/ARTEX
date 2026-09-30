@@ -25,12 +25,15 @@ type Database struct {
 }
 
 // Update carries self-update settings. Repo is the GitHub release source in
-// "owner/name" form; empty means the built-in official source. Proxy is an
-// update-only egress proxy (http/https/socks5); empty falls back to the global
-// egress proxy configured in the UI.
+// "owner/name" form; empty means the built-in default source.
+//
+// The update egress proxy is deliberately NOT here: it is a page-editable
+// setting stored in the database (like the global egress proxy), because a proxy
+// only affects the download route — TLS cert validation, the host allowlist, and
+// the SHA256SUMS check still guarantee integrity — so it does not carry the RCE
+// risk that keeps the release source locked to env/file.
 type Update struct {
-	Repo  string `json:"repo"`
-	Proxy string `json:"proxy"`
+	Repo string `json:"repo"`
 }
 
 // Config is the on-disk config file shape.
@@ -156,24 +159,6 @@ func UpdateRepo() (repo, source string) {
 		return v, "配置文件 " + Path() + " (update.repo)"
 	}
 	return "", "内置默认值"
-}
-
-// UpdateProxy resolves the update-only egress proxy with precedence:
-//
-//	env ARTEX_UPDATE_PROXY  >  config file (update.proxy)  >  "" (use global proxy)
-//
-// Empty means "no dedicated proxy": the update path then follows the global egress
-// proxy from the UI, so existing deployments keep behaving as before. Kept next to
-// update.repo on purpose — switching the release source usually means switching the
-// route out too, and splitting them across file and UI invites mismatches.
-func UpdateProxy() (proxy, source string) {
-	if v := strings.TrimSpace(os.Getenv("ARTEX_UPDATE_PROXY")); v != "" {
-		return v, "环境变量 ARTEX_UPDATE_PROXY"
-	}
-	if v := strings.TrimSpace(Load().Update.Proxy); v != "" {
-		return v, "配置文件 " + Path() + " (update.proxy)"
-	}
-	return "", ""
 }
 
 // PostgresDSN resolves the connection string with precedence:

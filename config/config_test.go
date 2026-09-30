@@ -58,54 +58,6 @@ func TestUpdateRepoEmptyWhenUnset(t *testing.T) {
 	}
 }
 
-// 更新代理和发布源配在一起：换了仓库往往也得换出网路径，拆到两处（一处文件一处
-// 页面）容易出现"源改了但还从旧通道去取"的错配。
-func TestUpdateProxyPrecedence(t *testing.T) {
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.json")
-	if err := os.WriteFile(cfgPath, []byte(`{"update":{"proxy":"socks5://127.0.0.1:1080"}}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("ARTEX_CONFIG", cfgPath)
-
-	t.Setenv("ARTEX_UPDATE_PROXY", "")
-	proxy, source := UpdateProxy()
-	if proxy != "socks5://127.0.0.1:1080" {
-		t.Errorf("无环境变量时应取配置文件的值，得到 %q", proxy)
-	}
-	if !strings.Contains(source, "update.proxy") {
-		t.Errorf("来源说明应指向配置文件的 update.proxy，得到 %q", source)
-	}
-
-	t.Setenv("ARTEX_UPDATE_PROXY", "http://127.0.0.1:7890")
-	proxy, source = UpdateProxy()
-	if proxy != "http://127.0.0.1:7890" {
-		t.Errorf("环境变量应优先，得到 %q", proxy)
-	}
-	if !strings.Contains(source, "ARTEX_UPDATE_PROXY") {
-		t.Errorf("来源说明应指向环境变量，得到 %q", source)
-	}
-}
-
-func TestUpdateProxyEmptyWhenUnset(t *testing.T) {
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.json")
-	if err := os.WriteFile(cfgPath, []byte(`{"update":{"repo":"me/artex"}}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("ARTEX_CONFIG", cfgPath)
-	t.Setenv("ARTEX_UPDATE_PROXY", "")
-
-	// 只配了 repo 没配 proxy——空值表示沿用全局出口代理，而不是强制直连。
-	if proxy, _ := UpdateProxy(); proxy != "" {
-		t.Errorf("未配置时应返回空串，得到 %q", proxy)
-	}
-	t.Setenv("ARTEX_UPDATE_PROXY", "   ")
-	if proxy, _ := UpdateProxy(); proxy != "" {
-		t.Errorf("全空格应视为未配置，得到 %q", proxy)
-	}
-}
-
 func TestPostgresDSNPrecedence(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.json")

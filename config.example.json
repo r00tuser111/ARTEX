@@ -21,10 +21,8 @@
   "_comment_skill_dir": "skill 根目录（每个子目录一个 skill，含 SKILL.md）。优先级：环境变量 ARTEX_SKILL_DIR > 本字段 > 默认（可执行文件同级的 skills/）。留空或删除本字段即用默认。相对路径相对当前工作目录解析。",
   "skill_dir": "/opt/artex/skills",
 
-  "_comment_update_repo": "页面一键更新的发布源，owner/name 形式，只能是 GitHub 上的仓库（域名白名单不放开，仍强制 HTTPS 并校验该 Release 的 SHA256SUMS）。优先级：环境变量 ARTEX_UPDATE_REPO > update.repo > 默认官方仓库 Autumn-27/artex。留空或删除即用官方源。刻意没有对应的页面开关：一键更新会用下载到的二进制替换 artex 本体，所以改发布源等于让服务器执行任意代码，这个权限只留给能改本文件的人。",
-  "_comment_update_proxy": "更新链路专用出口代理，http/https/socks5，可带 user:pass。优先级：环境变量 ARTEX_UPDATE_PROXY > update.proxy > 页面上的全局出口代理。留空或删除即沿用全局出口代理（再没有就直连）。和 repo 放在一起是因为换了发布源往往也要换出网路径。两者都需重启生效。",
+  "_comment_update_repo": "页面一键更新的发布源，owner/name 形式，只能是 GitHub 上的仓库（域名白名单不放开，仍强制 HTTPS 并校验该 Release 的 SHA256SUMS）。优先级：环境变量 ARTEX_UPDATE_REPO > update.repo > 默认仓库 r00tuser111/ARTEX。留空或删除即用默认源，不回退到上游仓库。刻意没有对应的页面开关：一键更新会用下载到的二进制替换 artex 本体，所以改发布源等于让服务器执行任意代码，这个权限只留给能改本文件的人。更新专用代理已移到页面（系统设置 · 版本与更新），不再走本文件。",
   "update": {
-    "repo": "Autumn-27/artex",
-    "proxy": "socks5://127.0.0.1:1080"
+    "repo": "r00tuser111/ARTEX"
   }
 }

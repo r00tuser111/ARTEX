@@ -923,6 +923,9 @@ export interface Settings {
   // 全局出口代理(http/https/socks5，可带 user:pass)，所有目标流量走它。开启流量捕获时作为
   // MITM 上游；关闭捕获时直接注入 agent 的 bash/WebFetch。空=直连。
   global_proxy?: string;
+  // 一键更新专用出口代理(http/https/socks5，可带 user:pass)。空=退回全局出口代理，再空=直连。
+  // 只有一键更新读它，与目标流量无关。
+  update_proxy?: string;
   python_interpreter?: string; // 自定义脚本工具的 python 解释器路径(空=运行时检测)
   workers?: number; // 并发工作 agent 数(默认3)；对之后启动的任务生效
   // 任务并发上限:同时「运行中」的任务数上限。关闭=不限;开启后新建任务超限则排队,有空位自动启动。
@@ -1484,11 +1487,11 @@ export interface UpdateCheck {
   arch: string;
   /** 实际生效的发布源仓库（owner/name）。 */
   repo: string;
-  /** 发布源是否为官方仓库。false 时卡片标红警告，且更新前要多确认一次。 */
-  repo_official?: boolean;
+  /** 发布源是否为默认仓库。false 时卡片标红警告，且更新前要多确认一次。 */
+  repo_default?: boolean;
   /** 发布源的配置来源（内置默认值 / 环境变量 / 配置文件路径），供运维核对改的是哪个开关。 */
   repo_source?: string;
-  /** 发布源配置无效时的原因；此时 repo 已退回官方源。 */
+  /** 发布源配置无效时的原因；此时 repo 已退回默认源。 */
   repo_error?: string;
   /** 更新链路是否经代理出网。 */
   proxy_set?: boolean;
@@ -1496,8 +1499,8 @@ export interface UpdateCheck {
   proxy?: string;
   /** 代理来源：更新专用代理 / 全局出口代理 / 未配置（直连）。 */
   proxy_source?: string;
-  /** 更新专用代理配置无效时的原因；此时已退回全局出口代理。 */
-  proxy_error?: string;
+  /** 页面配置的更新专用代理原始值（供输入框回显，未脱敏）；空=未配置专用代理。 */
+  update_proxy?: string;
   /** 是否存在可回滚的上一版本（artex.old）。 */
   has_backup: boolean;
   /** 本次启动时自更新自举的结论（换装失败 / 已回滚等），无事发生时为空。 */

@@ -12,8 +12,9 @@ import (
 	"time"
 )
 
-// DefaultRepo 是官方发布源。
-const DefaultRepo = "Autumn-27/artex"
+// DefaultRepo 是本部署的默认发布源。这是一个二开分支，默认就从本仓库自己的
+// Release 取版本，不回退到上游官方仓库。
+const DefaultRepo = "r00tuser111/ARTEX"
 
 // 发布源可换，但**只能由能登上服务器的人换**：SetRepo 的唯一调用方是 main，
 // 取值来自环境变量 ARTEX_UPDATE_REPO 或 config.json，没有任何 HTTP 接口能改它。
@@ -37,10 +38,11 @@ func Repo() string {
 	return repo
 }
 
-// IsOfficialRepo 报告当前发布源是否官方源，供前端决定要不要标红警告。
-func IsOfficialRepo() bool { return Repo() == DefaultRepo }
+// IsDefaultRepo 报告当前发布源是否为内置默认源，供前端决定要不要标红警告：
+// 指向默认源之外的仓库才值得提醒（那才是"从别处装二进制"）。
+func IsDefaultRepo() bool { return Repo() == DefaultRepo }
 
-// SetRepo 校验并切换发布源。校验不通过时**不改动当前值**，调用方据此退回官方源。
+// SetRepo 校验并切换发布源。校验不通过时**不改动当前值**，调用方据此退回默认源。
 // 只应在启动时、监听端口之前调用一次。
 func SetRepo(raw string) error {
 	v, err := ValidateRepo(raw)
@@ -137,38 +139,9 @@ type Asset struct {
 	Size int64  `json:"size"`
 }
 
-// 更新链路专用代理。和发布源一样只认环境变量 ARTEX_UPDATE_PROXY / config.json，
-// 原因也一样：发布源换了仓库，出网路径往往也得跟着换，两者配在一起才不会出现
-// "源改了但还从旧通道去取"的错配。
-//
-// 空 = 沿用调用方传入的全局出口代理（系统设置里那个），保持既有部署的行为不变。
-var (
-	proxyMu     sync.RWMutex
-	updateProxy string
-)
-
-// Proxy 返回更新链路专用代理（空表示未配置，沿用全局出口代理）。
-func Proxy() string {
-	proxyMu.RLock()
-	defer proxyMu.RUnlock()
-	return updateProxy
-}
-
-// SetProxy 校验并设置更新专用代理。空串清除它（更新链路退回全局出口代理），
-// 与 Manager.SetGlobalProxy 的语义一致。校验不通过时不改动当前值。
-// 只应在启动时调用一次。
-func SetProxy(raw string) error {
-	raw = strings.TrimSpace(raw)
-	if raw != "" {
-		if _, err := ValidateProxyURL(raw); err != nil {
-			return err
-		}
-	}
-	proxyMu.Lock()
-	updateProxy = raw
-	proxyMu.Unlock()
-	return nil
-}
+// 更新链路的出网代理由 server 层解析后传入（页面配置的更新专用代理 → 全局出口
+// 代理 → 直连），本包不持有它——selfupdate 在 Bootstrap 阶段就要跑，保持无状态、
+// 只依赖标准库。这里只留下代理值的**校验**与**脱敏**两个纯函数。
 
 // ValidateProxyURL 校验代理地址，口径与 traffic.ValidateProxyURL 一致
 // （http / https / socks5，必须带协议和主机）。刻意不 import traffic：selfupdate
@@ -193,16 +166,6 @@ func ValidateProxyURL(raw string) (*url.URL, error) {
 		return nil, fmt.Errorf("代理 %q 缺少主机地址", raw)
 	}
 	return u, nil
-}
-
-// ResolveProxy 报告更新链路实际使用的代理。
-// 优先级：更新专用代理 > fallback（全局出口代理） > 直连。
-// dedicated 区分前两者，供页面说清"这个代理是从哪个开关来的"。
-func ResolveProxy(fallback string) (proxy string, dedicated bool) {
-	if p := Proxy(); p != "" {
-		return p, true
-	}
-	return strings.TrimSpace(fallback), false
 }
 
 // RedactProxy 把代理地址里的密码换成 ****，供页面展示。
@@ -232,19 +195,16 @@ func RedactProxy(raw string) string {
 	return prefix + masked + "@" + strings.TrimPrefix(u.String(), prefix)
 }
 
-// NewClient 构造一个只认 GitHub 域名的 HTTP 客户端。
-//
-// fallbackProxy 是调用方提供的兜底代理（全局出口代理）；配了更新专用代理时以后者
-// 为准。两个都为空则直连。
+// NewClient 构造一个只认 GitHub 域名的 HTTP 客户端。proxy 为空则直连。
 //
 // 刻意不复用默认 Transport：升级链路必须强制走 TLS 且校验证书，不能被别处
 // 设置的 InsecureSkipVerify 之类影响到。
-func NewClient(fallbackProxy string) *http.Client {
+func NewClient(proxy string) *http.Client {
 	tr := &http.Transport{
 		ForceAttemptHTTP2:   true,
 		TLSHandshakeTimeout: 15 * time.Second,
 	}
-	if p, _ := ResolveProxy(fallbackProxy); p != "" {
+	if p := strings.TrimSpace(proxy); p != "" {
 		if pu, err := url.Parse(p); err == nil {
 			tr.Proxy = http.ProxyURL(pu)
 		}

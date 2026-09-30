@@ -15,6 +15,8 @@ import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
 import { api, sseUrl } from "@/lib/api";
 import type { UpdateCheck, UpdateProgress } from "@/lib/types";
@@ -44,6 +46,11 @@ export function UpdateCard() {
   // 与 progress 分开：暂存完成后进程就没了，SSE 会断，此时要切到轮询 /api/health。
   const [restarting, setRestarting] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
+  // 更新专用代理：页面可编辑，存后端设置。proxyInput 是输入框当前值，proxySeeded
+  // 确保只在首次拿到后端值时回填一次，之后不覆盖用户正在敲的内容。
+  const [proxyInput, setProxyInput] = React.useState("");
+  const [proxySeeded, setProxySeeded] = React.useState(false);
+  const [savingProxy, setSavingProxy] = React.useState(false);
 
   // quiet 同时决定要不要绕过后端缓存：进页面时的自动检查用缓存（顶栏刚查过），
   // 用户手动点「检查更新」则强制回源，否则刚发布的版本要等缓存过期才看得到。
@@ -53,6 +60,11 @@ export function UpdateCard() {
       .checkUpdate(!quiet)
       .then((r) => {
         setInfo(r);
+        // 首次拿到后端返回的专用代理原始值时回填输入框，之后不再覆盖用户编辑。
+        setProxySeeded((seeded) => {
+          if (!seeded) setProxyInput(r.update_proxy ?? "");
+          return true;
+        });
         if (!quiet) {
           if (r.error) toast.error("检查更新失败：" + r.error);
           else if (r.has_update) toast.success(`发现新版本 ${r.latest}`);
@@ -130,8 +142,20 @@ export function UpdateCard() {
     [waitForNewVersion],
   );
 
-  // repo_official 缺省（老后端）时按官方源处理，不凭空报警。
-  const unofficialRepo = info?.repo_official === false;
+  // repo_default 缺省（老后端）时按默认源处理，不凭空报警。
+  const nonDefaultRepo = info?.repo_default === false;
+
+  const saveProxy = () => {
+    setSavingProxy(true);
+    api
+      .setSettings({ update_proxy: proxyInput.trim() })
+      .then(() => {
+        toast.success("已保存更新专用代理");
+        check(true); // 刷新"更新出网"展示
+      })
+      .catch((e) => toast.error("保存失败：" + (e as Error).message))
+      .finally(() => setSavingProxy(false));
+  };
 
   const doUpdate = () => {
     if (!info) return;
@@ -139,19 +163,19 @@ export function UpdateCard() {
     const ok = window.confirm(
       `确定更新到 ${info.latest}？\n\n` +
         "更新会重启程序，正在运行的任务会被中断。\n" +
-        (unofficialRepo ? `\n警告：发布源不是官方仓库，将从 ${info.repo} 下载。\n` : "") +
+        (nonDefaultRepo ? `\n警告：发布源不是默认仓库，将从 ${info.repo} 下载。\n` : "") +
         (info.mode === "docker"
           ? "\n注意：容器内更新只替换程序本身，不会更新镜像里的 playwright / nmap 等工具链；" +
             "若新版本依赖新工具，请改用 docker compose pull。"
           : ""),
     );
     if (!ok) return;
-    // 非官方源再确认一次。装上的二进制会替换 artex 本体并以它的权限运行，
+    // 非默认源再确认一次。装上的二进制会替换 artex 本体并以它的权限运行，
     // 这一步的代价远高于一次普通升级，值得让用户多点一下。
     if (
-      unofficialRepo &&
+      nonDefaultRepo &&
       !window.confirm(
-        `再次确认：即将从非官方仓库 ${info.repo} 安装。\n\n` +
+        `再次确认：即将从非默认仓库 ${info.repo} 安装。\n\n` +
           "下载的程序会替换当前的 artex 本体，并以相同权限运行。\n" +
           "请仅在你确实信任该仓库时继续。",
       )
@@ -242,11 +266,11 @@ export function UpdateCard() {
           )}
         </div>
 
-        {unofficialRepo && (
+        {nonDefaultRepo && (
           <p className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 p-2 text-xs text-destructive">
             <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0" />
             <span>
-              发布源不是官方仓库：<span className="font-mono">{info?.repo}</span>
+              发布源不是默认仓库：<span className="font-mono">{info?.repo}</span>
               {info?.repo_source ? `（来自${info.repo_source}）` : ""}。 一键更新会用该仓库的发布包替换当前程序，
               请仅在你信任它时使用。
             </span>
@@ -257,15 +281,8 @@ export function UpdateCard() {
           <p className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-400">
             <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0" />
             <span>
-              发布源配置无效，已退回官方源 <span className="font-mono">{info.repo}</span>：{info.repo_error}
+              发布源配置无效，已退回默认源 <span className="font-mono">{info.repo}</span>：{info.repo_error}
             </span>
-          </p>
-        )}
-
-        {info?.proxy_error && (
-          <p className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-400">
-            <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0" />
-            <span>更新专用代理配置无效，已退回全局出口代理：{info.proxy_error}</span>
           </p>
         )}
 
@@ -276,13 +293,13 @@ export function UpdateCard() {
             <span className="text-muted-foreground">发布源</span>
             <span className="flex flex-wrap items-center gap-1.5">
               <span className="font-mono break-all">{info.repo}</span>
-              {unofficialRepo ? (
+              {nonDefaultRepo ? (
                 <Badge variant="destructive" className="px-1 py-0 text-[10px]">
-                  非官方
+                  自定义
                 </Badge>
               ) : (
                 <Badge variant="secondary" className="px-1 py-0 text-[10px]">
-                  官方
+                  默认
                 </Badge>
               )}
             </span>
@@ -303,6 +320,30 @@ export function UpdateCard() {
             </span>
           </div>
         )}
+
+        {/* 更新专用代理：页面可配。发布源是 RCE 向量，仍只能在服务器改；代理无此风险
+            （SHA256SUMS + TLS + GitHub 域名白名单照旧兜底），放到页面上方便调路由。 */}
+        <div className="flex flex-col gap-2 rounded-md border p-2">
+          <Label htmlFor="update-proxy" className="text-sm font-normal text-muted-foreground">
+            更新专用代理
+          </Label>
+          <div className="flex items-center gap-2">
+            <Input
+              id="update-proxy"
+              autoComplete="off"
+              placeholder="socks5://user:pass@host:1080 或 http://host:port（留空=退回全局代理）"
+              value={proxyInput}
+              disabled={!proxySeeded || savingProxy || busy || restarting}
+              onChange={(e) => setProxyInput(e.target.value)}
+            />
+            <Button type="button" size="sm" onClick={saveProxy} disabled={!proxySeeded || savingProxy || busy || restarting}>
+              保存
+            </Button>
+          </div>
+          <p className="text-muted-foreground text-xs">
+            只有一键更新走它。留空时更新链路沿用系统设置里的全局出口代理，全局也未配则直连 GitHub。
+          </p>
+        </div>
 
         {info?.boot_notice && (
           <p className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-400">
@@ -387,11 +428,10 @@ export function UpdateCard() {
         </p>
 
         <p className="text-xs text-muted-foreground">
-          发布源与更新专用代理只能在服务器上改：环境变量 <span className="font-mono">ARTEX_UPDATE_REPO</span> /{" "}
-          <span className="font-mono">ARTEX_UPDATE_PROXY</span>
-          ，或 <span className="font-mono">config.json</span> 的 <span className="font-mono">update.repo</span> /{" "}
-          <span className="font-mono">update.proxy</span>，改完需重启生效。页面上不提供开关——改发布源等于让服务器执行
-          任意代码，这个权限不随 Web 登录态下放。未配置专用代理时，更新链路沿用上面的全局出口代理。
+          发布源只能在服务器上改：环境变量 <span className="font-mono">ARTEX_UPDATE_REPO</span>，或{" "}
+          <span className="font-mono">config.json</span> 的 <span className="font-mono">update.repo</span>
+          ，改完需重启生效。页面上不提供发布源开关——改发布源等于让服务器执行任意代码，这个权限不随 Web
+          登录态下放。默认从 <span className="font-mono">r00tuser111/ARTEX</span> 获取，不回退到上游仓库。
         </p>
       </CardContent>
     </Card>
