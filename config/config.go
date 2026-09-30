@@ -24,10 +24,20 @@ type Database struct {
 	SSLMode  string `json:"sslmode"`
 }
 
+// Update carries self-update settings. Repo is the GitHub release source in
+// "owner/name" form; empty means the built-in official source. Proxy is an
+// update-only egress proxy (http/https/socks5); empty falls back to the global
+// egress proxy configured in the UI.
+type Update struct {
+	Repo  string `json:"repo"`
+	Proxy string `json:"proxy"`
+}
+
 // Config is the on-disk config file shape.
 type Config struct {
 	Database Database `json:"database"`
 	SkillDir string   `json:"skill_dir"`
+	Update   Update   `json:"update"`
 }
 
 // BaseDir is the directory that anchors all runtime artifacts (config.json and
@@ -124,6 +134,46 @@ func SkillDir() string {
 	}
 	_ = os.MkdirAll(d, 0o755)
 	return d
+}
+
+// UpdateRepo resolves the self-update release source with precedence:
+//
+//	env ARTEX_UPDATE_REPO  >  config file (update.repo)  >  "" (official default)
+//
+// An empty repo means "caller keeps the built-in default". source describes where
+// the value came from, for startup logging and for the update page to show the
+// operator which knob is in effect.
+//
+// Deliberately file/env only: there is no HTTP setter for this. Swapping the
+// release source is equivalent to arbitrary code execution on the host (the
+// downloaded binary replaces artex itself), so it stays with whoever can reach
+// the server, not with anyone holding a web session.
+func UpdateRepo() (repo, source string) {
+	if v := strings.TrimSpace(os.Getenv("ARTEX_UPDATE_REPO")); v != "" {
+		return v, "环境变量 ARTEX_UPDATE_REPO"
+	}
+	if v := strings.TrimSpace(Load().Update.Repo); v != "" {
+		return v, "配置文件 " + Path() + " (update.repo)"
+	}
+	return "", "内置默认值"
+}
+
+// UpdateProxy resolves the update-only egress proxy with precedence:
+//
+//	env ARTEX_UPDATE_PROXY  >  config file (update.proxy)  >  "" (use global proxy)
+//
+// Empty means "no dedicated proxy": the update path then follows the global egress
+// proxy from the UI, so existing deployments keep behaving as before. Kept next to
+// update.repo on purpose — switching the release source usually means switching the
+// route out too, and splitting them across file and UI invites mismatches.
+func UpdateProxy() (proxy, source string) {
+	if v := strings.TrimSpace(os.Getenv("ARTEX_UPDATE_PROXY")); v != "" {
+		return v, "环境变量 ARTEX_UPDATE_PROXY"
+	}
+	if v := strings.TrimSpace(Load().Update.Proxy); v != "" {
+		return v, "配置文件 " + Path() + " (update.proxy)"
+	}
+	return "", ""
 }
 
 // PostgresDSN resolves the connection string with precedence:

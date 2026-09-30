@@ -130,18 +130,33 @@ export function UpdateCard() {
     [waitForNewVersion],
   );
 
+  // repo_official 缺省（老后端）时按官方源处理，不凭空报警。
+  const unofficialRepo = info?.repo_official === false;
+
   const doUpdate = () => {
     if (!info) return;
     const from = info.current;
     const ok = window.confirm(
       `确定更新到 ${info.latest}？\n\n` +
         "更新会重启程序，正在运行的任务会被中断。\n" +
+        (unofficialRepo ? `\n警告：发布源不是官方仓库，将从 ${info.repo} 下载。\n` : "") +
         (info.mode === "docker"
           ? "\n注意：容器内更新只替换程序本身，不会更新镜像里的 playwright / nmap 等工具链；" +
             "若新版本依赖新工具，请改用 docker compose pull。"
           : ""),
     );
     if (!ok) return;
+    // 非官方源再确认一次。装上的二进制会替换 artex 本体并以它的权限运行，
+    // 这一步的代价远高于一次普通升级，值得让用户多点一下。
+    if (
+      unofficialRepo &&
+      !window.confirm(
+        `再次确认：即将从非官方仓库 ${info.repo} 安装。\n\n` +
+          "下载的程序会替换当前的 artex 本体，并以相同权限运行。\n" +
+          "请仅在你确实信任该仓库时继续。",
+      )
+    )
+      return;
 
     setBusy(true);
     setProgress({ phase: "downloading", percent: 0, message: "准备中…" });
@@ -227,6 +242,68 @@ export function UpdateCard() {
           )}
         </div>
 
+        {unofficialRepo && (
+          <p className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 p-2 text-xs text-destructive">
+            <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0" />
+            <span>
+              发布源不是官方仓库：<span className="font-mono">{info?.repo}</span>
+              {info?.repo_source ? `（来自${info.repo_source}）` : ""}。 一键更新会用该仓库的发布包替换当前程序，
+              请仅在你信任它时使用。
+            </span>
+          </p>
+        )}
+
+        {info?.repo_error && (
+          <p className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-400">
+            <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0" />
+            <span>
+              发布源配置无效，已退回官方源 <span className="font-mono">{info.repo}</span>：{info.repo_error}
+            </span>
+          </p>
+        )}
+
+        {info?.proxy_error && (
+          <p className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-400">
+            <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0" />
+            <span>更新专用代理配置无效，已退回全局出口代理：{info.proxy_error}</span>
+          </p>
+        )}
+
+        {/* 版本从哪来、怎么出网。检查更新失败时第一个要问的就是这两件事，
+            所以即使 GitHub 连不上也照常显示。 */}
+        {info && (
+          <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 rounded-md border bg-muted/40 p-2 text-xs">
+            <span className="text-muted-foreground">发布源</span>
+            <span className="flex flex-wrap items-center gap-1.5">
+              <span className="font-mono break-all">{info.repo}</span>
+              {unofficialRepo ? (
+                <Badge variant="destructive" className="px-1 py-0 text-[10px]">
+                  非官方
+                </Badge>
+              ) : (
+                <Badge variant="secondary" className="px-1 py-0 text-[10px]">
+                  官方
+                </Badge>
+              )}
+            </span>
+
+            <span className="text-muted-foreground">配置来源</span>
+            <span className="break-all">{info.repo_source ?? "内置默认值"}</span>
+
+            <span className="text-muted-foreground">更新出网</span>
+            <span className="break-all">
+              {info.proxy_set && info.proxy ? (
+                <>
+                  <span className="font-mono">{info.proxy}</span>
+                  {info.proxy_source ? <span className="text-muted-foreground"> · {info.proxy_source}</span> : null}
+                </>
+              ) : (
+                (info.proxy_source ?? "未配置 · 直连 GitHub")
+              )}
+            </span>
+          </div>
+        )}
+
         {info?.boot_notice && (
           <p className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-400">
             <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0" />
@@ -307,6 +384,14 @@ export function UpdateCard() {
         <p className="text-xs text-muted-foreground">
           一键更新依赖守护脚本重启程序。请通过 <span className="font-mono">start.sh</span>（Windows 为
           <span className="font-mono"> start.bat</span>）启动 ARTEX；直接运行 artex 本体时，程序退出后不会被自动拉起。
+        </p>
+
+        <p className="text-xs text-muted-foreground">
+          发布源与更新专用代理只能在服务器上改：环境变量 <span className="font-mono">ARTEX_UPDATE_REPO</span> /{" "}
+          <span className="font-mono">ARTEX_UPDATE_PROXY</span>
+          ，或 <span className="font-mono">config.json</span> 的 <span className="font-mono">update.repo</span> /{" "}
+          <span className="font-mono">update.proxy</span>，改完需重启生效。页面上不提供开关——改发布源等于让服务器执行
+          任意代码，这个权限不随 Web 登录态下放。未配置专用代理时，更新链路沿用上面的全局出口代理。
         </p>
       </CardContent>
     </Card>

@@ -27,6 +27,14 @@ services:
       ARTEX_LLM_MODEL: ${ARTEX_LLM_MODEL:-}
       ARTEX_LLM_BASE_URL: ${ARTEX_LLM_BASE_URL:-}
       ARTEX_LLM_PROXY: ${ARTEX_LLM_PROXY:-}
+      # 页面一键更新的发布源（owner/name），留空=官方仓库。刻意只走环境变量/配置
+      # 文件：一键更新会替换容器里的 /app/artex，所以这个值等同于"能在容器内执行
+      # 任意代码"，权限留给能改 compose 的人，不下放给 Web 登录态。
+      ARTEX_UPDATE_REPO: ${ARTEX_UPDATE_REPO:-}
+      # 更新链路专用代理（http/https/socks5），留空=沿用系统设置里的全局出口代理。
+      # 注意容器内的 127.0.0.1 是容器自己：宿主机上的代理要写
+      # host.docker.internal（Docker Desktop）或宿主机在 docker 网络里的地址。
+      ARTEX_UPDATE_PROXY: ${ARTEX_UPDATE_PROXY:-}
     ports:
       - "8787:8787"
       - "127.0.0.1:8788:8788"

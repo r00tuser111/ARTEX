@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -49,6 +50,77 @@ func bootUpdateState() selfupdate.State {
 	bootStateMu.Lock()
 	defer bootStateMu.Unlock()
 	return bootState
+}
+
+// 发布源与更新代理的"来源说明 + 配置错误"，由 main 在启动时注入（值本身存在
+// selfupdate 包里）。没有 setter 接口——两者都必须上服务器改环境变量或 config.json，
+// 见 selfupdate 包里那段注释。这里只负责把"现在用的是哪个源、走不走代理、分别是从
+// 哪配的"如实告诉前端，好让非官方源和意外的出网路径在页面上都藏不住。
+var (
+	updSourceMu    sync.Mutex
+	updSourceFrom  = "内置默认值"
+	updSourceErr   string
+	updProxyFrom   string
+	updProxyCfgErr string
+)
+
+// SetUpdateSource 由 main 调用一次。from 是配置来源的人话描述；cfgErr 非空表示
+// 配了但值无效、已退回官方源。
+func SetUpdateSource(from, cfgErr string) {
+	updSourceMu.Lock()
+	defer updSourceMu.Unlock()
+	if strings.TrimSpace(from) != "" {
+		updSourceFrom = from
+	}
+	updSourceErr = cfgErr
+}
+
+// SetUpdateProxySource 由 main 调用一次，语义同上（cfgErr 非空表示配了但无效、
+// 更新链路已退回全局出口代理）。
+func SetUpdateProxySource(from, cfgErr string) {
+	updSourceMu.Lock()
+	defer updSourceMu.Unlock()
+	updProxyFrom = from
+	updProxyCfgErr = cfgErr
+}
+
+// updateSourceInfo 拼出 /api/update/check 里描述"版本从哪来、怎么出网"的那几个
+// 字段。fallbackProxy 是系统设置里的全局出口代理，更新专用代理没配时就走它。
+func updateSourceInfo(fallbackProxy string) map[string]any {
+	updSourceMu.Lock()
+	from, cfgErr := updSourceFrom, updSourceErr
+	proxyFrom, proxyErr := updProxyFrom, updProxyCfgErr
+	updSourceMu.Unlock()
+
+	out := map[string]any{
+		"repo":          selfupdate.Repo(),
+		"repo_official": selfupdate.IsOfficialRepo(),
+		"repo_source":   from,
+	}
+	if cfgErr != "" {
+		// 配置无效时 from 描述的是那个被拒绝的配置项，而实际生效的是官方源。
+		// 两者一起给，用户才知道"我改的那个地方没生效"。
+		out["repo_error"] = cfgErr
+	}
+
+	proxy, dedicated := selfupdate.ResolveProxy(fallbackProxy)
+	out["proxy_set"] = proxy != ""
+	// 一律脱敏：代理串常带 user:pass，而这个接口对所有登录用户开放。
+	out["proxy"] = selfupdate.RedactProxy(proxy)
+	switch {
+	case proxy == "":
+		out["proxy_source"] = "未配置 · 直连 GitHub"
+	case dedicated:
+		out["proxy_source"] = "更新专用代理 · 来自" + proxyFrom
+	default:
+		// 没配专用代理，但系统设置里有全局代理——更新链路一直是跟着它走的，
+		// 说清楚免得用户以为更新走的是直连。
+		out["proxy_source"] = "全局出口代理 · 系统设置"
+	}
+	if proxyErr != "" {
+		out["proxy_error"] = proxyErr
+	}
+	return out
 }
 
 // releaseCache 缓存 GitHub 的最新版本查询结果。
@@ -214,16 +286,14 @@ func (s *Server) updateCheck(w http.ResponseWriter, r *http.Request) {
 		mode = "docker"
 	}
 	boot := bootUpdateState()
-	out := map[string]any{
-		"current":     current,
-		"mode":        mode,
-		"os":          runtime.GOOS,
-		"arch":        runtime.GOARCH,
-		"has_backup":  selfupdate.HasBackup(),
-		"repo":        selfupdate.Repo,
-		"boot_notice": boot.Detail,
-		"rolled_back": boot.RolledBack,
-	}
+	out := updateSourceInfo(s.m.GlobalProxy())
+	out["current"] = current
+	out["mode"] = mode
+	out["os"] = runtime.GOOS
+	out["arch"] = runtime.GOARCH
+	out["has_backup"] = selfupdate.HasBackup()
+	out["boot_notice"] = boot.Detail
+	out["rolled_back"] = boot.RolledBack
 
 	// 顶栏提示走缓存（默认）；用户点"检查更新"时带 force=1 强制回源。
 	force := r.URL.Query().Get("force") != ""

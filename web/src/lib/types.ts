@@ -1482,7 +1482,22 @@ export interface UpdateCheck {
   mode: "docker" | "binary";
   os: string;
   arch: string;
+  /** 实际生效的发布源仓库（owner/name）。 */
   repo: string;
+  /** 发布源是否为官方仓库。false 时卡片标红警告，且更新前要多确认一次。 */
+  repo_official?: boolean;
+  /** 发布源的配置来源（内置默认值 / 环境变量 / 配置文件路径），供运维核对改的是哪个开关。 */
+  repo_source?: string;
+  /** 发布源配置无效时的原因；此时 repo 已退回官方源。 */
+  repo_error?: string;
+  /** 更新链路是否经代理出网。 */
+  proxy_set?: boolean;
+  /** 实际生效的代理地址，已脱敏（密码替换为 ****）；直连时为空。 */
+  proxy?: string;
+  /** 代理来源：更新专用代理 / 全局出口代理 / 未配置（直连）。 */
+  proxy_source?: string;
+  /** 更新专用代理配置无效时的原因；此时已退回全局出口代理。 */
+  proxy_error?: string;
   /** 是否存在可回滚的上一版本（artex.old）。 */
   has_backup: boolean;
   /** 本次启动时自更新自举的结论（换装失败 / 已回滚等），无事发生时为空。 */

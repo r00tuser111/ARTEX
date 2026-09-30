@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,6 +17,186 @@ import (
 
 func newTestCache(fetch func(context.Context, *http.Client) (*selfupdate.Release, error)) *releaseCache {
 	return &releaseCache{fetch: fetch}
+}
+
+// 非官方发布源在页面上必须藏不住：前端靠 repo_official 决定要不要标红并追加一次
+// 确认，靠 repo_source 告诉运维这个值是从哪个开关来的。这几个字段错了，用户会在
+// 不知情的情况下从别人的仓库装上一个会替换 artex 本体的二进制。
+// 代理那几个字段同理——更新走哪条出网路径必须看得见，且绝不能回显凭据。
+
+// restoreUpdateSource 在测试结束后还原 main 注入的那几个全局值。
+func restoreUpdateSource(t *testing.T) {
+	t.Helper()
+	updSourceMu.Lock()
+	from, cfgErr := updSourceFrom, updSourceErr
+	proxyFrom, proxyErr := updProxyFrom, updProxyCfgErr
+	updSourceMu.Unlock()
+	t.Cleanup(func() {
+		SetUpdateSource(from, cfgErr)
+		SetUpdateProxySource(proxyFrom, proxyErr)
+	})
+}
+
+// withUpdateProxy 设置更新专用代理并在测试后还原。
+func withUpdateProxy(t *testing.T, raw string) {
+	t.Helper()
+	old := selfupdate.Proxy()
+	t.Cleanup(func() {
+		if err := selfupdate.SetProxy(old); err != nil {
+			t.Errorf("还原更新代理: %v", err)
+		}
+	})
+	if err := selfupdate.SetProxy(raw); err != nil {
+		t.Fatalf("SetProxy(%q): %v", raw, err)
+	}
+}
+
+func TestUpdateSourceInfoDefaultsToOfficial(t *testing.T) {
+	restoreUpdateSource(t)
+	SetUpdateSource("内置默认值", "")
+
+	got := updateSourceInfo("")
+	if got["repo"] != selfupdate.DefaultRepo {
+		t.Errorf("repo = %v, want %s", got["repo"], selfupdate.DefaultRepo)
+	}
+	if got["repo_official"] != true {
+		t.Errorf("repo_official = %v, want true", got["repo_official"])
+	}
+	// 没有配置错误时不该出现 repo_error，否则前端会凭空弹一条警告。
+	if _, ok := got["repo_error"]; ok {
+		t.Errorf("默认源不应带 repo_error，得到 %v", got["repo_error"])
+	}
+}
+
+func TestUpdateSourceInfoReportsNonOfficialSource(t *testing.T) {
+	restoreUpdateSource(t)
+	old := selfupdate.Repo()
+	t.Cleanup(func() {
+		if err := selfupdate.SetRepo(old); err != nil {
+			t.Errorf("还原发布源: %v", err)
+		}
+	})
+	if err := selfupdate.SetRepo("someone/fork"); err != nil {
+		t.Fatal(err)
+	}
+	SetUpdateSource("环境变量 ARTEX_UPDATE_REPO", "")
+
+	got := updateSourceInfo("")
+	if got["repo"] != "someone/fork" {
+		t.Errorf("repo = %v, want someone/fork", got["repo"])
+	}
+	if got["repo_official"] != false {
+		t.Errorf("repo_official = %v, want false", got["repo_official"])
+	}
+	if got["repo_source"] != "环境变量 ARTEX_UPDATE_REPO" {
+		t.Errorf("repo_source = %v", got["repo_source"])
+	}
+}
+
+// 配错了的情况：实际生效的是官方源，但要把那条错误一起报出去，否则运维会以为
+// 自己改的发布源已经生效了。
+func TestUpdateSourceInfoSurfacesConfigError(t *testing.T) {
+	restoreUpdateSource(t)
+	SetUpdateSource("环境变量 ARTEX_UPDATE_REPO", "发布源 \"nope\" 无效")
+
+	got := updateSourceInfo("")
+	if got["repo"] != selfupdate.DefaultRepo || got["repo_official"] != true {
+		t.Errorf("配置无效时应退回官方源，得到 repo=%v official=%v", got["repo"], got["repo_official"])
+	}
+	if got["repo_error"] != "发布源 \"nope\" 无效" {
+		t.Errorf("repo_error = %v", got["repo_error"])
+	}
+}
+
+// 三种出网情形各自的说明必须能区分开。尤其是"没配专用代理但有全局代理"这一种：
+// 更新链路一直跟着全局代理走，页面上说成直连会让用户排错时找错方向。
+func TestUpdateSourceInfoReportsDirectConnection(t *testing.T) {
+	restoreUpdateSource(t)
+	withUpdateProxy(t, "")
+	SetUpdateProxySource("", "")
+
+	got := updateSourceInfo("")
+	if got["proxy_set"] != false {
+		t.Errorf("proxy_set = %v, want false", got["proxy_set"])
+	}
+	if got["proxy"] != "" {
+		t.Errorf("直连时 proxy 应为空，得到 %v", got["proxy"])
+	}
+	if got["proxy_source"] != "未配置 · 直连 GitHub" {
+		t.Errorf("proxy_source = %v", got["proxy_source"])
+	}
+}
+
+func TestUpdateSourceInfoReportsGlobalProxyFallback(t *testing.T) {
+	restoreUpdateSource(t)
+	withUpdateProxy(t, "")
+	SetUpdateProxySource("", "")
+
+	got := updateSourceInfo("http://127.0.0.1:7890")
+	if got["proxy_set"] != true {
+		t.Errorf("proxy_set = %v, want true", got["proxy_set"])
+	}
+	if got["proxy"] != "http://127.0.0.1:7890" {
+		t.Errorf("proxy = %v", got["proxy"])
+	}
+	if got["proxy_source"] != "全局出口代理 · 系统设置" {
+		t.Errorf("proxy_source = %v", got["proxy_source"])
+	}
+}
+
+func TestUpdateSourceInfoPrefersDedicatedProxy(t *testing.T) {
+	restoreUpdateSource(t)
+	withUpdateProxy(t, "socks5://127.0.0.1:1080")
+	SetUpdateProxySource("环境变量 ARTEX_UPDATE_PROXY", "")
+
+	// 专用代理必须盖过全局代理，否则"给更新单独开一条通道"这件事就没落地。
+	got := updateSourceInfo("http://127.0.0.1:7890")
+	if got["proxy"] != "socks5://127.0.0.1:1080" {
+		t.Errorf("proxy = %v, want socks5://127.0.0.1:1080", got["proxy"])
+	}
+	if got["proxy_source"] != "更新专用代理 · 来自环境变量 ARTEX_UPDATE_PROXY" {
+		t.Errorf("proxy_source = %v", got["proxy_source"])
+	}
+}
+
+// 这个接口对所有登录用户开放，回显的代理地址里绝不能带密码。
+func TestUpdateSourceInfoRedactsProxyCredentials(t *testing.T) {
+	restoreUpdateSource(t)
+	withUpdateProxy(t, "socks5://alice:s3cret@127.0.0.1:1080")
+	SetUpdateProxySource("配置文件 /etc/artex/config.json (update.proxy)", "")
+
+	got := updateSourceInfo("")
+	shown, _ := got["proxy"].(string)
+	if strings.Contains(shown, "s3cret") {
+		t.Fatalf("代理密码被回显了: %q", shown)
+	}
+	if !strings.Contains(shown, "alice") || !strings.Contains(shown, "127.0.0.1:1080") {
+		t.Errorf("脱敏后仍应能认出用户名和主机，得到 %q", shown)
+	}
+
+	// 全局代理那条路同样要脱敏——它来自数据库，一样可能带凭据。
+	withUpdateProxy(t, "")
+	SetUpdateProxySource("", "")
+	got = updateSourceInfo("http://bob:hunter2@proxy.local:8080")
+	if shown, _ := got["proxy"].(string); strings.Contains(shown, "hunter2") {
+		t.Fatalf("全局代理的密码被回显了: %q", shown)
+	}
+}
+
+// 代理配错时更新链路退回全局代理，但要把原因报出去。
+func TestUpdateSourceInfoSurfacesProxyConfigError(t *testing.T) {
+	restoreUpdateSource(t)
+	withUpdateProxy(t, "")
+	SetUpdateProxySource("环境变量 ARTEX_UPDATE_PROXY", "不支持的代理协议 \"ftp\"")
+
+	got := updateSourceInfo("http://127.0.0.1:7890")
+	if got["proxy_error"] != "不支持的代理协议 \"ftp\"" {
+		t.Errorf("proxy_error = %v", got["proxy_error"])
+	}
+	// 专用代理没生效，所以实际走的是全局代理，展示也必须这么说。
+	if got["proxy_source"] != "全局出口代理 · 系统设置" {
+		t.Errorf("proxy_source = %v", got["proxy_source"])
+	}
 }
 
 func TestReleaseCacheServesFromCache(t *testing.T) {
