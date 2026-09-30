@@ -120,7 +120,11 @@ jobs:
       - uses: docker/metadata-action@v5
         id: meta
         with:
-          images: autumn27/artex
+          # 镜像命名空间跟着 Docker Hub 账号走，不写死：fork 出去的仓库只要配好
+          # DOCKERHUB_USERNAME / DOCKERHUB_TOKEN 两个 secret 就能推自己的镜像。
+          # 推到组织名下（登录账号 != 命名空间）时，加一个仓库变量
+          # DOCKERHUB_IMAGE=your-org/artex 覆盖即可。
+          images: ${{ vars.DOCKERHUB_IMAGE || format('{0}/artex', secrets.DOCKERHUB_USERNAME) }}
           tags: |
             type=ref,event=tag
             type=raw,value=latest
