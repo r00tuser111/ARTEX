@@ -935,6 +935,24 @@ function sendMockWorkerMessage(
   };
 }
 
+function reopenMockTask(id: string, reason: string) {
+  const task = mockTasks.find((item) => item.id === id);
+  if (!task) throw new Error("task not found");
+  const trimmed = reason.trim();
+  if (!trimmed) throw new Error("打回原因不能为空");
+  if ([...trimmed].length > 4000) throw new Error("打回原因不能超过 4000 个字符");
+  if (task.status !== "done") throw new Error("只有已完成的任务可以打回继续");
+  const reopened = task.goals_met ?? 0;
+  task.status = "running";
+  task.paused = false;
+  task.queued = false;
+  task.completed_at = undefined;
+  task.completed_unix = undefined;
+  task.engine_mode = "exploring";
+  task.goals_met = 0;
+  return { id, status: "running", queued: false, reopened_goals: reopened };
+}
+
 function controlMockTask(id: string, action: "pause" | "resume"): BatchControlItem {
   const task = mockTasks.find((item) => item.id === id);
   if (!task) return { id, ok: false, error: "任务不存在" };
@@ -1494,6 +1512,9 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
       accepted: true,
       request_id: result.requestId ?? "",
     };
+  }
+  if (seg[0] === "tasks" && seg.length === 3 && seg[2] === "reopen" && m === "POST") {
+    return reopenMockTask(seg[1], String(b.reason ?? ""));
   }
   if (seg[0] === "tasks" && seg.length === 3 && seg[2] === "control" && m === "POST") {
     const action = b.action === "resume" ? "resume" : "pause";

@@ -153,6 +153,7 @@ func renderPlannerTodos(items []actool.Todo) string {
 //	            single call (Goals = 本次新增的目标文本，1+ 条；set_goals 支持批量).
 //	"goal_deleted" — the human deleted a goal from 总览的目标管理 (Detail = 被删目标文本).
 //	"goal_edited"  — the human edited a goal from 总览的目标管理 (OldGoal→NewGoal 文本).
+//	"reopened" — the human rejected a done task (Detail = 打回原因). Met goals are open again.
 //	"cancelled" — the human deleted intent IntentID (Detail = 删除原因). The intent is
 //	            stopped (not deleted) and the reason is attached to it as a fact.
 type TriggerEvent struct {
@@ -194,6 +195,8 @@ func renderTriggers(ts *db.ExplorationStore, evs []TriggerEvent) string {
 			b.WriteString(fmt.Sprintf("\n- 人删除了该目标：%s —— 该目标已移除，请据此重判剩余目标/方向（不必再为它派意图）。", ev.Detail))
 		case "goal_edited":
 			b.WriteString(fmt.Sprintf("\n- 人修改了目标，由「%s」变为「%s」—— 请据新目标调整探索方向（原方向若已不适用请停派）。", ev.OldGoal, ev.NewGoal))
+		case "reopened":
+			b.WriteString(fmt.Sprintf("\n- 用户打回了任务完成，原因：%s —— 先看这个原因，再决定补哪条意图。被理由否定的目标不能用打回前的旧证据再次 prove_goal；没被否定的目标，旧证据仍然充分就可以再次标达成。", ev.Detail))
 		case "finding":
 			b.WriteString(fmt.Sprintf("\n- 意图 #%d（%s）的 worker 报告了一个 finding：%s", ev.IntentID, intentSummary(ts, ev.IntentID), ev.Detail))
 		case "cancelled":
@@ -314,6 +317,7 @@ const plannerDefaultTmpl = `你是一个网络安全平台授权渗透测试系�
 
 2. **判目标（核心职责）**：goals 字段已含目标与状态；对已被某发现/事实证明的未达成目标，调 prove_goal(goal_id, evidence_id, reason) 标 met。**当你标记的恰是最后一个未完成目标时，系统自动判定整个任务完成**——收官只由逐个 prove_goal 驱动，没有别的"一键完成"手段。
    - ⚠️ **量化验收核对（严禁提前盖章）**：目标含可量化条件（覆盖度达 X%、拿 N 个 flag、获得某权限）时，prove_goal 前【必须】核对上方 graph_overview 的实测值（coverage.pct、findings 计数等）：未达标就【禁止】prove_goal，改派意图补差；不得以"大体达成/核心已拿下"为由提前标 met。例：要求覆盖度 100% 而实测 coverage.pct=40% → 未达成，继续派补测意图。
+   - ⚠️ **用户打回完成（不得用旧证据盖章）**：若本轮触发或 hints 写明用户打回了完成判定，对照打回原因看每个重新打开的目标。原因否定的目标，打回前的 proves 只是历史，必须有新证据才能再 prove_goal。原因没否定的目标，旧证据仍然充分就可以再次标达成。不要把没被否定的目标一律当成没证据。
 
 3. **（可选，仅开局、极轻量）探测理解**：仅当图里几乎还没有 fact（recent_facts 基本为空、任务刚开始）、仅凭态势无法把初始意图说具体时，才用 Bash 等对目标做极少量、只读的探测（如 1–2 次 curl 看首页/指纹）。**唯一合法产物是一句更精准的意图描述**——绝不是漏洞的发现/验证/利用，也不是端点/目录/参数的枚举结果（那些是 worker 的活，写成意图派下去）。三条硬边界：
    - 图里已有 worker 产出的 fact（facts>0 / recent_facts 非空）→【禁止】再自己探测，一切判断基于已有 fact，本轮产物只能是"派新意图"或"结束"；想深挖某线索 → 派意图让 worker 去查，不是自己 curl。

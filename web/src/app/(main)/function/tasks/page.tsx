@@ -33,6 +33,7 @@ import {
   PinOffIcon,
   PlayIcon,
   PlusIcon,
+  RotateCcwIcon,
   SaveIcon,
   SearchIcon,
   SlidersHorizontalIcon,
@@ -44,6 +45,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
+import { ReopenTaskDialog } from "@/components/reopen-task-dialog";
 import { StatusBadge } from "@/components/status-badge";
 import { TablePagination } from "@/components/table-pagination";
 import { TaskLLMProfileChain } from "@/components/task-llm-profile-chain";
@@ -544,6 +546,11 @@ export default function TasksPage() {
   // controlTask 是行内暂停/继续:批量走 controlTasksBatch,单行走单任务接口,省去
   // 「先勾选再点批量」。清空 lastRef 让下一次轮询即使负载相同也照单接收,否则状态
   // 回写会被去重挡掉、按钮看起来没反应。
+  const refreshAfterReopen = React.useCallback(() => {
+    lastRef.current = "";
+    load();
+  }, [load]);
+
   const controlTask = React.useCallback(
     async (id: string, action: "pause" | "resume") => {
       try {
@@ -981,6 +988,7 @@ export default function TasksPage() {
                       nowSec={task.status === "running" ? nowSec : 0}
                       onDelete={deleteTask}
                       onControl={controlTask}
+                      onReopened={refreshAfterReopen}
                       onRename={renameTask}
                       onTogglePinned={toggleTaskPinned}
                       onArchive={queueTaskArchive}
@@ -1156,6 +1164,7 @@ const TaskRow = React.memo(function TaskRow({
   nowSec,
   onDelete,
   onControl,
+  onReopened,
   onRename,
   onTogglePinned,
   onArchive,
@@ -1166,6 +1175,7 @@ const TaskRow = React.memo(function TaskRow({
   nowSec: number;
   onDelete: (id: string, options: DeleteTaskOptions) => Promise<void>;
   onControl: (id: string, action: "pause" | "resume") => Promise<void>;
+  onReopened: () => void;
   onRename: (task: Task, name: string) => Promise<void>;
   onTogglePinned: (task: Task) => Promise<void>;
   onArchive: (task: Task) => Promise<void>;
@@ -1259,7 +1269,7 @@ const TaskRow = React.memo(function TaskRow({
               <EyeIcon />
             </Link>
           </Button>
-          <TaskControlButton task={task} onControl={onControl} />
+          <TaskControlButton task={task} onControl={onControl} onReopened={onReopened} />
           <TaskPinAction task={task} onTogglePinned={onTogglePinned} />
           <TaskArchiveAction task={task} onArchive={onArchive} />
           <DeleteTaskDialog task={task} onDelete={onDelete} />
@@ -1402,17 +1412,32 @@ function taskControlIcon(pending: boolean, action: "pause" | "resume" | null) {
   return <PauseIcon />;
 }
 
-// TaskControlButton 是行内的暂停/继续开关。终态任务渲染为 disabled 而不是隐藏,
-// 这样各行操作列宽度一致,按钮位置不会随状态跳动。
+// TaskControlButton 是行内的暂停/继续开关。失败和超时仍渲染为 disabled,
+// 这样各行操作列宽度一致。已完成任务改为打回继续。
 function TaskControlButton({
   task,
   onControl,
+  onReopened,
 }: {
   task: Task;
   onControl: (id: string, action: "pause" | "resume") => Promise<void>;
+  onReopened: () => void;
 }) {
   const [pending, setPending] = React.useState(false);
   const action = taskControlAction(task.status);
+  if (task.status === "done") {
+    return (
+      <ReopenTaskDialog
+        taskId={task.id}
+        onReopened={onReopened}
+        trigger={
+          <Button size="icon" variant="ghost" aria-label="打回继续" title="打回继续">
+            <RotateCcwIcon />
+          </Button>
+        }
+      />
+    );
+  }
   const label = action === "resume" ? "继续任务" : "暂停任务";
   return (
     <Button

@@ -289,6 +289,20 @@ func (s *ExplorationStore) UpdateGoalPayload(id int64, text, vulnclass string) e
 	return nil
 }
 
+// DeleteNode hard-deletes one node of the given kind in this exploration.
+// The kind guard keeps a rollback from removing a different node that reused the id.
+// Edges and anchors that reference it go with it via ON DELETE CASCADE.
+func (s *ExplorationStore) DeleteNode(id int64, kind string) error {
+	res, err := s.db.Exec(`DELETE FROM exploration_nodes WHERE id=$1 AND exploration_id=$2 AND kind=$3`, id, s.expID, kind)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("节点不存在")
+	}
+	return nil
+}
+
 // DeleteGoal hard-deletes a goal node; scoped to kind='goal' so it can never drop
 // an intent/fact by id. The edges (spawns) and anchors reference it with ON DELETE
 // CASCADE, so they go with it; activity.node_id is ON DELETE SET NULL. Returns an

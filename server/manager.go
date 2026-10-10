@@ -1863,6 +1863,41 @@ func (t *Task) NotifyHint(texts []string) {
 	t.Notify()
 }
 
+// queueReopenedTrigger records a human rejection of a done task without waking the
+// planner. The caller admits the task immediately afterwards; that admission is
+// the wake-up, so the first running round still sees the reason.
+func (t *Task) queueReopenedTrigger(reason string) {
+	reason = strings.TrimSpace(reason)
+	if t == nil || reason == "" {
+		return
+	}
+	t.trigMu.Lock()
+	t.pendingTriggers = append(t.pendingTriggers, agent.TriggerEvent{Kind: "reopened", Detail: reason})
+	t.trigMu.Unlock()
+}
+
+// dropReopenedTrigger removes one queued rejection, used when admission fails
+// after the graph change has been compensated.
+func (t *Task) dropReopenedTrigger(reason string) {
+	if t == nil {
+		return
+	}
+	reason = strings.TrimSpace(reason)
+	t.trigMu.Lock()
+	defer t.trigMu.Unlock()
+	src := append([]agent.TriggerEvent(nil), t.pendingTriggers...)
+	kept := make([]agent.TriggerEvent, 0, len(src))
+	removed := false
+	for _, ev := range src {
+		if !removed && ev.Kind == "reopened" && ev.Detail == reason {
+			removed = true
+			continue
+		}
+		kept = append(kept, ev)
+	}
+	t.pendingTriggers = kept
+}
+
 // NotifyGoalDeleted records that the human deleted a goal (via 总览的目标管理), then
 // wakes the planner so the next round spells out which goal was removed. The event
 // survives an early-returning terminal round (drain happens after the gate).

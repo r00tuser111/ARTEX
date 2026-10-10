@@ -5,9 +5,10 @@ import * as React from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 
-import { ArchiveIcon, ArrowLeftIcon, BrainIcon, CheckIcon, CircleAlertIcon, PauseIcon, PlayIcon } from "lucide-react";
+import { ArchiveIcon, ArrowLeftIcon, BrainIcon, CheckIcon, CircleAlertIcon, PauseIcon, PlayIcon, RotateCcwIcon } from "lucide-react";
 import { toast } from "sonner";
 
+import { ReopenTaskDialog } from "@/components/reopen-task-dialog";
 import { StatusBadge } from "@/components/status-badge";
 import { TaskLLMProfileChain } from "@/components/task-llm-profile-chain";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -392,10 +393,23 @@ function TaskDetailInner() {
               <TooltipContent>{archiveDisabledReason}</TooltipContent>
             </Tooltip>
           )}
-          <Button size="sm" variant={controlVariant} onClick={togglePause} disabled={terminal}>
-            {controlIcon}
-            {controlLabel}
-          </Button>
+          {completed ? (
+            <ReopenTaskDialog
+              taskId={task.id}
+              onReopened={() => void load()}
+              trigger={
+                <Button size="sm">
+                  <RotateCcwIcon data-icon="inline-start" />
+                  打回继续
+                </Button>
+              }
+            />
+          ) : (
+            <Button size="sm" variant={controlVariant} onClick={togglePause} disabled={terminal}>
+              {controlIcon}
+              {controlLabel}
+            </Button>
+          )}
         </div>
         <p className="truncate text-xs text-muted-foreground">{task.goal}</p>
         {/* Tabs */}

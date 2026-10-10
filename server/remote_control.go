@@ -458,7 +458,7 @@ func (s *Server) remoteCommand(text string) (string, bool, error) {
 	}
 	switch strings.ToLower(f[0]) {
 	case "/help":
-		return "快捷命令：\n/tasks — 任务列表\n/task <ID> — 任务详情\n/pause <ID> — 暂停任务\n/resume <ID> — 恢复任务\n/new <描述> | <目标> — 新建任务\n其余内容会交给 Auto 操作助手理解并执行。", true, nil
+		return "快捷命令：\n/tasks — 任务列表\n/task <ID> — 任务详情\n/pause <ID> — 暂停任务\n/resume <ID> — 恢复任务\n/reopen <ID> <原因> — 打回已完成任务并继续\n/new <描述> | <目标> — 新建任务\n其余内容会交给 Auto 操作助手理解并执行。", true, nil
 	case "/tasks":
 		rows := s.m.List()
 		if len(rows) == 0 {
@@ -496,6 +496,28 @@ func (s *Server) remoteCommand(text string) (string, bool, error) {
 			return "", true, err
 		}
 		return fmt.Sprintf("任务 #%s 已%s（状态：%s）", t.ID, map[string]string{"pause": "暂停", "resume": "恢复"}[action], result.Status), true, nil
+	case "/reopen":
+		if len(f) < 3 {
+			return "用法：/reopen <任务ID> <原因>", true, nil
+		}
+		t, ok := s.m.Task(f[1])
+		if !ok {
+			return "任务不存在：#" + f[1], true, nil
+		}
+		rest := strings.TrimSpace(strings.TrimSpace(text)[len(f[0]):])
+		if !strings.HasPrefix(rest, f[1]) {
+			return "用法：/reopen <任务ID> <原因>", true, nil
+		}
+		reason := strings.TrimSpace(rest[len(f[1]):])
+		result, err := s.reopenDoneTask(t, reason)
+		if err != nil {
+			return "", true, err
+		}
+		state := "继续"
+		if result.Queued {
+			state = "进入队列"
+		}
+		return fmt.Sprintf("任务 #%s 已打回并%s（状态：%s）", t.ID, state, result.Status), true, nil
 	case "/new":
 		rest := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(text), f[0]))
 		parts := strings.SplitN(rest, "|", 2)
